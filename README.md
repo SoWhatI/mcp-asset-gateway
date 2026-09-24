@@ -1,5 +1,7 @@
 # MCP Asset Gateway
 
+简体中文 | [English](README.en.md)
+
 为 AI 客户端提供统一 MCP 入口的自托管资产网关。通过 Web 控制台管理资产、账号凭据、客户端和授权组，并记录工具调用审计。
 
 ## 功能总览
