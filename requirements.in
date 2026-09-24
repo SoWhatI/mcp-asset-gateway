@@ -9,6 +9,6 @@ mcp>=1.30,<2
 httpx>=0.28,<1
 jsonschema>=4.23,<5
 sqlglot>=26,<31
-python-dotenv>=1.0,<2
+python-dotenv>=1.2.3,<2
 regex>=2024.11,<2027
 wsproto>=1.2,<2
