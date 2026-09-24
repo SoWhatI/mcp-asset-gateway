@@ -96,6 +96,18 @@ python scripts/release_check.py
 
 安全边界和漏洞反馈见 [SECURITY.md](SECURITY.md)，贡献说明见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
+## 谁在使用？
+
+如果你的公司或团队正在生产环境使用本网关，[欢迎登记](https://github.com/SoWhatI/mcp-asset-gateway/issues/new?template=used_by.yml)；经你确认后，使用案例将展示在这里。
+
+## Star History
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=SoWhatI/mcp-asset-gateway&type=Date&theme=dark" />
+  <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=SoWhatI/mcp-asset-gateway&type=Date" />
+  <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=SoWhatI/mcp-asset-gateway&type=Date" />
+</picture>
+
 ## 许可
 
 [MIT](LICENSE)

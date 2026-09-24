@@ -1,0 +1,48 @@
+name: "使用登记 / Used by"
+description: "贵公司或团队在生产环境使用本项目？登记案例 / Register your company or team using this gateway"
+labels: ["used-by"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢登记！这些信息将帮助社区了解真实使用场景，经你确认后可能展示在 README 的「谁在使用」区块。
+
+        Thanks for registering! This helps the community understand real-world usage, and verified cases may be showcased in the README.
+  - type: input
+    id: company
+    attributes:
+      label: "公司 / 团队名称（Company or team name）"
+      description: "希望展示的名称；也接受脱敏描述，如「某城商行」（The name to display; anonymized descriptions are fine）"
+    validations:
+      required: true
+  - type: input
+    id: website
+    attributes:
+      label: "网站 / 主页（Website）"
+      description: "可选（Optional）"
+    validations:
+      required: false
+  - type: textarea
+    id: usage
+    attributes:
+      label: "使用场景简述（How do you use it?）"
+      description: "可选。例如：统一管理某团队几十台服务器的 SSH 与数据库资产（Optional, e.g. what assets and teams it serves）"
+    validations:
+      required: false
+  - type: dropdown
+    id: consent
+    attributes:
+      label: "是否同意公开展示？（May we showcase it publicly?）"
+      options:
+        - "同意展示公司名 / Name only"
+        - "同意展示名称与 logo / Name and logo"
+        - "暂不公开展示，仅登记 / Register only, do not showcase"
+    validations:
+      required: true
+  - type: input
+    id: contact
+    attributes:
+      label: "联系方式（Contact）"
+      description: "可选。仅用于确认展示细节，不会公开（Optional; used only to confirm showcase details, never published）"
+    validations:
+      required: false

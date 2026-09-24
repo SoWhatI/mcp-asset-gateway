@@ -98,6 +98,18 @@ Default tests never touch real assets; remote contract, Docker lifecycle, and re
 
 See [SECURITY.md](SECURITY.md) for the security boundary and vulnerability reporting, and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
 
+## Who's Using It?
+
+If your company or team runs this gateway in production, please [register your usage](https://github.com/SoWhatI/mcp-asset-gateway/issues/new?template=used_by.yml). Verified cases will be showcased here.
+
+## Star History
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=SoWhatI/mcp-asset-gateway&type=Date&theme=dark" />
+  <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=SoWhatI/mcp-asset-gateway&type=Date" />
+  <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=SoWhatI/mcp-asset-gateway&type=Date" />
+</picture>
+
 ## License
 
 [MIT](LICENSE)
