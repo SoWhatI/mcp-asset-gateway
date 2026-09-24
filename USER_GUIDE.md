@@ -49,15 +49,19 @@ uvicorn app.main:app_factory --factory --host 127.0.0.1 --port 8303 --workers 1 
 
 ### Docker 评估与部署入口
 
-需要 Docker 和 Compose 2.30+。在已经安装 Python 运行依赖的项目目录中：
+需要 Docker 和 Compose 2.30+；官方多架构镜像（linux/amd64、linux/arm64）发布在 `ghcr.io/sowhati/mcp-asset-gateway`，部署无需宿主机 Python：
 
 ```bash
-python -m app.cli setup --public-url https://gateway.example.com
-bash build-and-push.sh --build
-bash deploy.sh --init
+mkdir mcp-asset-gateway && cd mcp-asset-gateway
+curl -fsSLO https://raw.githubusercontent.com/SoWhatI/mcp-asset-gateway/main/docker-compose.yml
+docker run --rm ghcr.io/sowhati/mcp-asset-gateway:0.1.0 \
+  python -m app.cli setup --public-url https://gateway.example.com --output - > .env
+chmod 600 .env
+docker compose up -d
+docker compose run --rm --no-deps gateway python -m app.cli init-admin --generate-password
 ```
 
-`gateway.example.com` 是占位域名，需替换为自己的访问地址。已有 `.env` 时不要重复执行 `setup`，应核对其中的配置。`deploy.sh --init` 会初始化管理员，不要先另行在同一容器数据库上执行 `init-admin`。
+已有源码目录时也可直接执行 `bash deploy.sh --init`（需先自行生成 `.env` 与镜像）；`gateway.example.com` 是占位域名，需替换为自己的访问地址。已有 `.env` 时不要重复执行 `setup`，应核对其中的配置。`deploy.sh --init` 会初始化管理员；未使用该脚本时，执行上面的 `init-admin` 命令即可，不要对同一容器数据库重复初始化。
 
 默认仅绑定宿主机 `127.0.0.1:8303`，需自行配置反向代理提供 HTTPS。代理应保留原始 Host，转发 `Authorization` 和 MCP 协议头；支持流式 HTTP，不缓冲 MCP 响应，并设置足够的读取超时。不要在代理访问日志中记录认证头、cookie 或完整请求体。
 
@@ -77,7 +81,7 @@ bash deploy.sh --init
 | `OUTBOUND_ALLOWLIST` | 默认 `null`，不启用目标登记。非空 JSON 数组启用主机/端口登记 |
 | `SSH_HOST_KEY_ENFORCE` | 默认 `false`，存在中间人风险；生产应设为 `true` 并核对指纹 |
 | `DATABASE_PATH` | 本地默认为 `data/gateway.db`；Compose 固定为 `/app/data/gateway.db` |
-| `IMAGE_NAME` / `IMAGE_TAG` | 构建和运行镜像的名称、固定版本标签，二者应匹配 |
+| `IMAGE_NAME` / `IMAGE_TAG` | 运行镜像的名称与固定版本标签；默认官方镜像 `ghcr.io/sowhati/mcp-asset-gateway`，自建镜像时改为自己的地址 |
 
 出站配置必须是合法 JSON，例如：
 
@@ -209,7 +213,7 @@ docker compose exec -T gateway python -m app.cli backup /app/backups/manual.sqli
 ### 升级与恢复
 
 1. 阅读 [CHANGELOG](CHANGELOG.md)，先在隔离环境验证迁移和恢复。
-2. 构建或拉取明确版本的镜像，更新 `.env` 中的 `IMAGE_NAME` / `IMAGE_TAG`。
+2. 拉取明确版本的目标镜像，更新 `.env` 中的 `IMAGE_TAG`（官方镜像无需改 `IMAGE_NAME`）。
 3. 执行 `bash deploy.sh --upgrade`：脚本在线备份、停止旧实例、执行迁移并启动新实例。
 4. 验证 `/ready`、登录、工具目录、只读调用和审计。
 

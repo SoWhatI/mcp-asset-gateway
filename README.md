@@ -26,6 +26,22 @@
 
 ## 快速开始
 
+推荐 Docker 部署，需要 Docker 与 Compose 2.30+；全程无需宿主机 Python：
+
+```bash
+mkdir mcp-asset-gateway && cd mcp-asset-gateway
+curl -fsSLO https://raw.githubusercontent.com/SoWhatI/mcp-asset-gateway/main/docker-compose.yml
+docker run --rm ghcr.io/sowhati/mcp-asset-gateway:0.1.0 \
+  python -m app.cli setup --public-url https://gateway.example.com --output - > .env
+chmod 600 .env
+docker compose up -d
+docker compose run --rm --no-deps gateway python -m app.cli init-admin --generate-password
+```
+
+`gateway.example.com` 是占位域名，替换为实际访问地址；本地评估使用 `http://localhost:8303`。打开控制台，使用管理员 `admin` 与一次性密码登录后修改密码；没有内置默认密码。镜像升级、反向代理、源码构建与备份恢复见 [部署与运维](docs/deployment.md)；安装、接入与配置核对见 [用户指南](USER_GUIDE.md)。
+
+### 源码运行
+
 环境：Python 3.11+、Node.js 22（最低 20.19）、Linux/macOS；Windows 使用 WSL2 或 Docker。使用 Git 资产还需支持 `http.curloptResolve` 的系统 Git 和 OpenSSH。当前采用 SQLite WAL 与进程文件锁，仅支持单实例、单 Uvicorn worker；数据库不要放在共享网络文件系统。
 
 本地评估（在项目根目录执行）：
@@ -41,17 +57,7 @@ python -m app.cli init-admin --generate-password
 uvicorn app.main:app_factory --factory --host 127.0.0.1 --port 8303 --workers 1 --no-access-log
 ```
 
-打开 http://localhost:8303，使用管理员 `admin` 与一次性密码登录后修改密码；没有内置默认密码。`setup` 不覆盖已有 `.env`。
-
-Docker 部署：
-
-```bash
-python -m app.cli setup --public-url https://gateway.example.com
-bash build-and-push.sh --build
-bash deploy.sh --init
-```
-
-`gateway.example.com` 是占位域名，替换为实际访问地址；本地评估使用 `http://localhost:8303`。镜像构建推送、升级迁移与备份恢复见 [部署与运维](docs/deployment.md)；安装、接入与配置核对见 [用户指南](USER_GUIDE.md)。
+打开 http://localhost:8303，使用管理员 `admin` 与一次性密码登录后修改密码。`setup` 不覆盖已有 `.env`，支持 `--output -` 输出到 stdout 便于在容器内生成。
 
 ## 文档
 

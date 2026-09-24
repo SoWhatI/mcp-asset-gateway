@@ -4,35 +4,41 @@
 
 ## Docker 部署
 
-需要 Docker 和支持 `env_file.format: raw` 的 Compose 2.30+。在完成本地依赖安装后，用 CLI 生成 `.env`；容器内的数据目录由 Compose 单独指定。
+需要 Docker 和支持 `env_file.format: raw` 的 Compose 2.30+。官方多架构镜像（linux/amd64 与 linux/arm64）发布在 `ghcr.io/sowhati/mcp-asset-gateway`，部署全程无需宿主机 Python：
 
 ```bash
-python -m app.cli setup --public-url https://gateway.example.com
-bash build-and-push.sh --build
-bash deploy.sh --init
+mkdir mcp-asset-gateway && cd mcp-asset-gateway
+curl -fsSLO https://raw.githubusercontent.com/SoWhatI/mcp-asset-gateway/main/docker-compose.yml
+docker run --rm ghcr.io/sowhati/mcp-asset-gateway:0.1.0 \
+  python -m app.cli setup --public-url https://gateway.example.com --output - > .env
+chmod 600 .env
+docker compose up -d
+docker compose run --rm --no-deps gateway python -m app.cli init-admin --generate-password
 ```
 
-`gateway.example.com` 是占位域名，需替换为实际访问地址。如果已有 `.env`，跳过 `setup` 并手工核对参数。Compose 默认只绑定宿主机回环地址，通过反向代理提供 HTTPS。`PUBLIC_BASE_URL`、`ALLOWED_HOSTS`、`ALLOWED_ORIGINS` 应与访问域名一致；远程部署保持 `COOKIE_SECURE=true`。参考 [.env.example](../.env.example)。
+`setup --output -` 由镜像内代码生成随机主密钥并输出到 stdout，用重定向保存后请立即 `chmod 600 .env`。`gateway.example.com` 是占位域名，需替换为实际访问地址。如果已有 `.env`，跳过 `setup` 并手工核对参数。Compose 默认只绑定宿主机回环地址，通过反向代理提供 HTTPS。`PUBLIC_BASE_URL`、`ALLOWED_HOSTS`、`ALLOWED_ORIGINS` 应与访问域名一致；远程部署保持 `COOKIE_SECURE=true`。参考 [.env.example](../.env.example)。
 
 容器以非 root 用户运行，根文件系统只读、移除 capabilities；数据库与备份分别使用命名卷。不要使用多副本访问同一个数据库。
 
 ## 构建、推送与升级
 
-`build-and-push.sh` 默认仅本地构建；推送必须显式指定目标，脚本不登录仓库、不部署服务：
-
-```bash
-IMAGE_NAME=ghcr.io/your-owner/mcp-asset-gateway IMAGE_TAG=0.1.0 bash build-and-push.sh --push
-```
-
-`--remote` 还要求显式设置 `SERVER`、`REGISTRY`、`REMOTE_IMAGE`；可通过 `BASE_DIR` 设置构建目录，默认 `/opt/mcp-asset-gateway`。它会通过 SSH 上传构建上下文并构建/推送，请仅指向可信主机。每个标签使用独立目录，已有同标签目录会拒绝覆盖；不使用 `latest`。需要提前完成 SSH 和 registry 登录。
-
-升级前先构建或拉取目标镜像，更新 `.env` 中的 `IMAGE_NAME` / `IMAGE_TAG`，再执行：
+升级官方镜像：修改 `.env` 中的 `IMAGE_TAG`（`IMAGE_NAME` 保持官方地址），然后执行：
 
 ```bash
 bash deploy.sh --upgrade
 ```
 
 脚本先在线备份，再停止旧实例、执行迁移并启动新实例。迁移 `003.sql` 将旧授权转为具名组并拆分客户端、账号成员表，允许跨组重复授权；`005.sql` 与 `006.sql` 重建 `assets` 表以支持 `redis`、`kubernetes` 与 `gitrepo` 类型。`007.sql` 增加参数规则，并将旧 SSH 非空 `command_allowlist` 迁入所有现存授权条目的 `cmd` 精确白名单；空名单/未配置名单原本不可执行，因此移除对应 `exec_command` 授权，需管理员显式重新勾选。迁移使用旧分词/引用方式生成精确文本，保留通配符等字面量语义并移除账号旧字段；之后调用必须与迁移后的文本一致，空白/引号等变体不再自动归一化。`008.sql` 重建资产表以纳入 Jenkins，保留既有账号凭据、授权组及参数规则并复验外键。不要编辑已应用的迁移文件；不要用旧镜像直接打开升级后的数据库。
+
+维护者发布官方镜像：在 GitHub Actions 页面手动触发 `publish-image` 并输入版本号，构建 linux/amd64 与 linux/arm64 双架构镜像并推送 ghcr.io（使用内置 `GITHUB_TOKEN`，无需配置密钥）。
+
+自建镜像：`build-and-push.sh` 默认仅本地构建；推送必须显式指定目标，脚本不登录仓库、不部署服务：
+
+```bash
+IMAGE_NAME=ghcr.io/your-owner/mcp-asset-gateway IMAGE_TAG=0.1.0 bash build-and-push.sh --push
+```
+
+此时需同步把仓库内 `docker-compose.yml` 与 `.env` 的 `IMAGE_NAME` 指向自己的镜像。
 
 ## 备份和恢复
 

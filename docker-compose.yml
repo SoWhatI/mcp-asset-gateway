@@ -1,8 +1,8 @@
 version: "2.4"
 services:
   gateway:
-    image: ${IMAGE_NAME:-mcp-asset-gateway}:${IMAGE_TAG:-0.1.0}
-    build: .
+    # 默认拉取官方多架构镜像；自行构建时用 IMAGE_NAME 覆盖（见 build-and-push.sh）。
+    image: ${IMAGE_NAME:-ghcr.io/sowhati/mcp-asset-gateway}:${IMAGE_TAG:-0.1.0}
     restart: unless-stopped
     init: true
     user: "10001:10001"

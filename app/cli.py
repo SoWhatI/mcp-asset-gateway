@@ -4,6 +4,7 @@ import os
 import re
 import secrets
 import stat
+import sys
 
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
@@ -20,6 +21,11 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     setup = sub.add_parser("setup", help="创建本地 .env，不覆盖已有文件")
     setup.add_argument("--public-url", default="http://localhost:8303")
+    setup.add_argument(
+        "--output",
+        default=".env",
+        help="输出路径，默认 .env；- 表示输出到 stdout，配合 shell 重定向生成文件（无需宿主机 Python）",
+    )
     sub.add_parser("migrate", help="迁移数据库，需停止正在运行的应用")
     init = sub.add_parser("init-admin", help="首次初始化管理员")
     init.add_argument("--username", default="admin")
@@ -37,7 +43,11 @@ def main():
             parser.error("public-url 包含非法字符")
         key = Fernet.generate_key().decode()
         value = f"GATEWAY_MASTER_KEY={key}\nGATEWAY_MASTER_KEY_ID=key-1\nDATABASE_PATH=data/gateway.db\nPUBLIC_BASE_URL={args.public_url}\nCOOKIE_SECURE={'true' if args.public_url.startswith('https:') else 'false'}\nOUTBOUND_ALLOWLIST=null\nLEGACY_COMPAT=false\nSSH_HOST_KEY_ENFORCE=false\nIMAGE_TAG=0.1.0\n"
-        with open(".env", "x") as output:
+        if args.output == "-":
+            sys.stdout.write(value)
+            print("以上为 .env 内容：请用重定向保存并执行 chmod 600 .env；请独立备份主密钥。", file=sys.stderr)
+            return
+        with open(args.output, "x") as output:
             output.write(value)
         print("已创建权限受限的 .env；请独立备份主密钥；需要出站管控时再填写 OUTBOUND_ALLOWLIST。")
         return

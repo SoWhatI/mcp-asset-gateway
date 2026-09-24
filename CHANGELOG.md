@@ -7,4 +7,6 @@
 - 八类资产适配器：MySQL（默认只读，账号显式开启 `allow_write` 后支持受限写操作）、SSH 非交互执行、FileBrowser 只读目录、上游 MCP 转发、Redis 键扫描与读取、Kubernetes 资源/日志/`k8s_exec`、Git 代码仓库只读副本、Jenkins 原生 HTTP API（19 项工具）。
 - 具名授权组：多个客户端与多个“账号-工具”条目关联，跨组权限取并集；工具参数黑白名单支持精确匹配与限时正则全文匹配。
 - Web 管理控制台：授权矩阵多维搜索、组管理、工具全选、调试台与审计导出。
+- 部署：官方多架构镜像（linux/amd64、linux/arm64）发布于 ghcr.io，`docker-compose.yml` + `.env` 三步部署，无需宿主机 Python（`app.cli setup --output -` 在容器内生成配置）。
+- 部署：官方多架构镜像（linux/amd64、linux/arm64）发布于 ghcr.io，`docker-compose.yml` + `.env` 三步部署，无需宿主机 Python（`app.cli setup --output -` 在容器内生成配置）。
 - 安全基础：凭据 Fernet 加密、客户端令牌摘要存储、管理会话与 CSRF 防护、出站目标允许列表、SQLite 一致备份与主密钥轮换。
