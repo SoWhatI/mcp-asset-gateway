@@ -80,9 +80,7 @@ class MCPProxyAssetType(AssetType):
             if connection.get("transport") == "sse":
 
                 def factory(**kwargs):
-                    return httpx.AsyncClient(
-                        transport=transport, follow_redirects=False, trust_env=False, **kwargs
-                    )
+                    return httpx.AsyncClient(transport=transport, follow_redirects=False, trust_env=False, **kwargs)
 
                 # SSE 传输：GET /sse 建立事件流，POST 地址由上游 endpoint 事件给出。
                 # httpx client 必须经 factory 注入 PinnedTransport，保证出站校验与来源固定同样生效。
@@ -104,9 +102,7 @@ class MCPProxyAssetType(AssetType):
                         timeout=httpx.Timeout(ctx.remaining(), connect=5),
                     )
                 )
-                streams = await stack.enter_async_context(
-                    streamable_http_client(connection["url"], http_client=client)
-                )
+                streams = await stack.enter_async_context(streamable_http_client(connection["url"], http_client=client))
             async with ClientSession(streams[0], streams[1]) as session:
                 await session.initialize()
                 yield session

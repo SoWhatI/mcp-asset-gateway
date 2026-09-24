@@ -169,9 +169,7 @@ async def test_upstream_sse_transport(config, monkeypatch):
 
         return middleware
 
-    server_config = uvicorn.Config(
-        wrap(upstream.sse_app()), host="127.0.0.1", port=port, log_level="warning"
-    )
+    server_config = uvicorn.Config(wrap(upstream.sse_app()), host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(server_config)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -180,9 +178,7 @@ async def test_upstream_sse_transport(config, monkeypatch):
 
     # 出站登记用替换后的配置副本（测试基线没有该随机端口，明文目标显式 allow_http）；
     # DNS 解析 mock 到 127.0.0.1，PinnedTransport 保持真实传输层。
-    network = NetworkPolicy(
-        replace(config, outbound=({"host": "mcp.example.test", "port": port, "allow_http": True},))
-    )
+    network = NetworkPolicy(replace(config, outbound=({"host": "mcp.example.test", "port": port, "allow_http": True},)))
     monkeypatch.setattr(network, "resolve", lambda *args: "127.0.0.1")
 
     def context():
