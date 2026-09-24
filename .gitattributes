@@ -1,0 +1,11 @@
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.webp binary
+PROGRESS.md export-ignore
+MCP资产网关设计文档.md export-ignore
+.preview export-ignore
+.local-e2e export-ignore
+.env export-ignore
+data export-ignore
+backups export-ignore

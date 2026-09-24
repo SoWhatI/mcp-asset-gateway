@@ -1,0 +1,4 @@
+# 先安装带哈希校验的 requirements.lock，再安装本文件。
+pytest==9.1.1
+pytest-asyncio==1.4.0
+ruff==0.16.7
