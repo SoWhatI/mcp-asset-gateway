@@ -63,6 +63,7 @@ PR 请写明变更目的、兼容性/迁移影响、测试结果及剩余风险�
 
 - [ ] 通过 Python/前端测试、构建与漏洞审计；完成容器启动、迁移和恢复演练。
 - [ ] 在干净环境按用户指南完整执行一次部署，并对默认跳过的集成测试（远端契约、全栈 e2e、真实浏览器、稳定性压测）单独验收。
+- [ ] 版本号全量同步：pyproject.toml、web/package.json、app/main.py 与 app/stdio_server.py 的 serverInfo、web/src/App.vue 页脚、app/cli.py setup 模板、.env.example、docker-compose.yml、build-and-push.sh 及文档示例一致。
 - [ ] 从已审核提交生成固定版本标签、Release 说明和镜像；镜像通过手动触发 `publish-image` workflow（输入与仓库一致的版本号）发布到 ghcr.io，记录支持范围、升级步骤、已知限制及校验信息，不附入运行数据。
 
 ### GitHub 仓库设置

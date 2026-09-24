@@ -33,5 +33,7 @@ COPY --from=web /build/static/ ./static/
 USER 10001:10001
 EXPOSE 8303
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8303/ready', timeout=3)"
-CMD ["uvicorn", "app.main:app_factory", "--factory", "--host", "0.0.0.0", "--port", "8303", "--workers", "1", "--no-access-log", "--no-proxy-headers", "--limit-concurrency", "128", "--timeout-graceful-shutdown", "40"]
+    CMD ["python", "app/healthcheck.py"]
+# 入口自动分流：配置了主密钥（compose env_file）启动 HTTP 服务；未配置（目录检查、
+# 本地直连）进入自举 stdio 模式，响应 MCP introspection。
+CMD ["sh", "-c", "if [ -n \"$GATEWAY_MASTER_KEY\" ]; then exec uvicorn app.main:app_factory --factory --host 0.0.0.0 --port 8303 --workers 1 --no-access-log --no-proxy-headers --limit-concurrency 128 --timeout-graceful-shutdown 40; else exec python -m app.stdio_server; fi"]
