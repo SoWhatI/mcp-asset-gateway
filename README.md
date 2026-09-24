@@ -1,34 +1,34 @@
 # MCP Asset Gateway
 
-简体中文 | [English](README.en.md)
+English | [简体中文](README.zh-CN.md)
 
-为 AI 客户端提供统一 MCP 入口的自托管资产网关。通过 Web 控制台管理资产、账号凭据、客户端和授权组，并记录工具调用审计。
+A self-hosted asset gateway that provides AI clients with a single, controlled MCP entry point. Manage assets, account credentials, clients, and authorization groups through a web console, with full tool-call auditing.
 
-## 功能总览
+## Features
 
-| 类型 | 能力要点 |
+| Type | Highlights |
 |---|---|
-| MySQL | 默认只读查询与结构读取；账号显式开启 `allow_write` 后支持受限 INSERT/UPDATE/DELETE，UPDATE/DELETE 强制 WHERE |
-| SSH | 非交互命令执行，命令参数由授权组黑白名单控制；不提供 PTY 或交互输入 |
-| FileBrowser | 基于 SFTP 的受限目录浏览与文件读取 |
-| MCP | 转发上游工具，按账号批准工具定义版本 |
-| Redis | 在白名单模式范围内扫描与读取键，写工具按账号策略显式开启 |
-| Kubernetes | 资源列表、详情、Pod 日志与非交互 `k8s_exec`；Token 或客户端证书认证，详见 [Kubernetes 资产](docs/asset-kubernetes.md) |
-| Git 仓库 | 网关托管只读代码副本：代码搜索、文件读取、提交历史、差异、目录树与分支列表 |
-| Jenkins | 直接调用 Jenkins HTTP API，无需 MCP 插件；19 项任务、构建、日志、测试、SCM 与 Replay 工具，详见 [Jenkins 资产](docs/asset-jenkins.md) |
-| 管理控制台 | 授权矩阵多维搜索、组管理、工具全选/取消全选、参数黑白名单（精确/正则）、调试和审计导出 |
-| 安全基础 | 凭据 Fernet 加密、客户端令牌摘要存储、管理会话与 CSRF、出站目标允许列表、SQLite 一致备份 |
+| MySQL | Read-only queries and schema reads by default; restricted INSERT/UPDATE/DELETE after `allow_write` is explicitly enabled per account, with mandatory WHERE on UPDATE/DELETE |
+| SSH | Non-interactive command execution; command arguments controlled by per-group allow/block lists; no PTY or interactive input |
+| FileBrowser | SFTP-based restricted directory browsing and file reading |
+| MCP | Forwards upstream tools with per-account approval of tool definition versions |
+| Redis | Key scanning and reading within allow-list patterns; write tools enabled explicitly per account policy |
+| Kubernetes | Resource listing, details, Pod logs, and non-interactive `k8s_exec`; token or client-certificate auth — see [Kubernetes assets](docs/asset-kubernetes.md) (Chinese) |
+| Git repositories | Gateway-hosted read-only code mirrors: code search, file reading, commit history, diffs, directory tree, and branch listing |
+| Jenkins | Direct Jenkins HTTP API calls without any MCP plugin; 19 tools for jobs, builds, logs, tests, SCM, and Replay — see [Jenkins assets](docs/asset-jenkins.md) (Chinese) |
+| Admin console | Multi-dimensional search in the authorization matrix, group management, tool select-all/clear, parameter allow/block lists (exact/regex), debugging, and audit export |
+| Security foundation | Fernet-encrypted credentials, hashed client tokens, admin sessions with CSRF protection, egress target allow-listing, consistent SQLite backups |
 
-## 授权与安全模型
+## Authorization & Security Model
 
-- 授权组关联多个客户端与多个资产账号，组内每个客户端获得每个账号上被选中的、实际存在的工具权限；多组取并集，同名工具不重复发布。完整规则见 [授权组与参数规则](docs/authorization.md)。
-- 工具默认不授权；写操作与高危工具（MySQL `allow_write`、Jenkins 写工具、`k8s_exec` 等）必须在授权组显式勾选。
-- 客户端令牌仅展示一次，凭据加密存储；主密钥与数据库分开保管。
-- 可选出站登记约束网关可达目标，并始终禁止回环、链路本地、组播与云元数据地址；允许列表不能替代防火墙。
+- An authorization group links multiple clients with multiple asset accounts; each client in the group gets the selected tools that actually exist on each account. Permissions across groups are merged (union), and identically named tools are published once. Full rules: [Authorization groups & parameter rules](docs/authorization.md) (Chinese).
+- Tools are unauthorized by default; write operations and high-risk tools (MySQL `allow_write`, Jenkins write tools, `k8s_exec`, etc.) must be checked explicitly in an authorization group.
+- Client tokens are shown only once; credentials are stored encrypted; keep the master key separate from the database.
+- Optional egress registration restricts reachable targets; loopback, link-local, multicast, and cloud metadata addresses are always denied. An allow-list is not a substitute for a firewall.
 
-## 快速开始
+## Quick Start
 
-推荐 Docker 部署，需要 Docker 与 Compose 2.30+；全程无需宿主机 Python：
+Docker is recommended; Docker and Compose 2.30+ required. No Python needed on the host:
 
 ```bash
 mkdir mcp-asset-gateway && cd mcp-asset-gateway
@@ -40,13 +40,13 @@ docker compose up -d
 docker compose run --rm --no-deps gateway python -m app.cli init-admin --generate-password
 ```
 
-`gateway.example.com` 是占位域名，替换为实际访问地址；本地评估使用 `http://localhost:8303`。打开控制台，使用管理员 `admin` 与一次性密码登录后修改密码；没有内置默认密码。镜像升级、反向代理、源码构建与备份恢复见 [部署与运维](docs/deployment.md)；安装、接入与配置核对见 [用户指南](USER_GUIDE.md)。
+`gateway.example.com` is a placeholder — replace it with your actual address; use `http://localhost:8303` for local evaluation. Open the console, sign in as admin `admin` with the one-time password, then change it; there is no built-in default password. For image upgrades, reverse proxying, building from source, and backup/restore, see [Deployment & operations](docs/deployment.md) (Chinese); for installation, onboarding, and configuration checklists, see the [User guide](USER_GUIDE.md) (Chinese).
 
-### 源码运行
+### Run from Source
 
-环境：Python 3.11+、Node.js 22（最低 20.19）、Linux/macOS；Windows 使用 WSL2 或 Docker。使用 Git 资产还需支持 `http.curloptResolve` 的系统 Git 和 OpenSSH。当前采用 SQLite WAL 与进程文件锁，仅支持单实例、单 Uvicorn worker；数据库不要放在共享网络文件系统。
+Requirements: Python 3.11+, Node.js 22 (minimum 20.19), Linux/macOS; on Windows use WSL2 or Docker. Git assets additionally require a system Git with `http.curloptResolve` support and OpenSSH. SQLite WAL and process file locks are used, so a single instance with a single Uvicorn worker is supported; do not place the database on shared network filesystems.
 
-本地评估（在项目根目录执行）：
+Local evaluation (from the project root):
 
 ```bash
 python3 -m venv .venv
@@ -59,22 +59,24 @@ python -m app.cli init-admin --generate-password
 uvicorn app.main:app_factory --factory --host 127.0.0.1 --port 8303 --workers 1 --no-access-log
 ```
 
-打开 http://localhost:8303，使用管理员 `admin` 与一次性密码登录后修改密码。`setup` 不覆盖已有 `.env`，支持 `--output -` 输出到 stdout 便于在容器内生成。
+Open http://localhost:8303, sign in as admin `admin` with the one-time password, then change it. `setup` never overwrites an existing `.env` and supports `--output -` to print to stdout for generating it inside a container.
 
-## 文档
+## Documentation
 
-| 文档 | 内容 |
+| Document | Contents |
 |---|---|
-| [用户指南](USER_GUIDE.md) | 安装、首次登录、资产接入、授权、MCP 配置、备份及常见问题 |
-| [授权组与参数规则](docs/authorization.md) | 授权组模型与工具参数黑白名单 |
-| [Kubernetes 资产](docs/asset-kubernetes.md) | 账号策略、认证与 `k8s_exec` 工具参考 |
-| [Jenkins 资产](docs/asset-jenkins.md) | 原生 Jenkins 工具、权限与预算 |
-| [部署与运维](docs/deployment.md) | Docker 构建/推送/升级、数据迁移、备份恢复 |
-| [安全说明](SECURITY.md) | 安全边界、验证范围与私密漏洞报告 |
-| [贡献指南](CONTRIBUTING.md) | 提交约定、验证命令与 GitHub 发布前清单 |
-| [变更记录](CHANGELOG.md) | 版本历史 |
+| [User guide](USER_GUIDE.md) | Installation, first sign-in, asset onboarding, authorization, MCP configuration, backups, FAQ |
+| [Authorization groups & parameter rules](docs/authorization.md) | Group model and tool parameter allow/block lists |
+| [Kubernetes assets](docs/asset-kubernetes.md) | Account policy, authentication, and `k8s_exec` tool reference |
+| [Jenkins assets](docs/asset-jenkins.md) | Native Jenkins tools, permissions, and budgets |
+| [Deployment & operations](docs/deployment.md) | Docker build/push/upgrade, data migration, backup & restore |
+| [Security policy](SECURITY.md) | Security boundaries, verification scope, private vulnerability reporting |
+| [Contributing](CONTRIBUTING.md) | Commit conventions, verification commands, pre-release checklist |
+| [Changelog](CHANGELOG.md) | Version history |
 
-## 开发与测试
+The documentation is currently written in Chinese.
+
+## Development & Testing
 
 ```bash
 python -m pip install -r requirements-dev.txt
@@ -86,19 +88,19 @@ npm run build --prefix web
 python scripts/release_check.py
 ```
 
-默认测试不访问真实资产；远端契约、Docker 生命周期和真实浏览器验收需显式配置，默认跳过。隔离本地容器验收入口为 `python tests/local_stack.py --help`；不要给测试配置生产资产或凭据。
+Default tests never touch real assets; remote contract, Docker lifecycle, and real-browser acceptance tests require explicit configuration and are skipped by default. The isolated local-container acceptance entry point is `python tests/local_stack.py --help`; never configure production assets or credentials for tests.
 
-- `app/asset_types/`：八类资产适配器（MySQL、SSH、FileBrowser、MCP、Redis、Kubernetes、Git 仓库、Jenkins）。
-- `app/core/`：存储迁移、授权、执行与安全基础设施。
-- `app/main.py`、`app/cli.py`：HTTP/MCP 入口及维护命令。
-- `web/src/`：Vue 管理界面；构建输出 `static/`，不提交产物。
-- `tests/`：API、隔离、迁移和协议回归。
+- `app/asset_types/`: adapters for the eight asset types (MySQL, SSH, FileBrowser, MCP, Redis, Kubernetes, Git repositories, Jenkins).
+- `app/core/`: storage migrations, authorization, execution, and security infrastructure.
+- `app/main.py`, `app/cli.py`: HTTP/MCP entry points and maintenance commands.
+- `web/src/`: Vue admin UI; build output goes to `static/` and is not committed.
+- `tests/`: API, isolation, migration, and protocol regression tests.
 
-安全边界和漏洞反馈见 [SECURITY.md](SECURITY.md)，贡献说明见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+See [SECURITY.md](SECURITY.md) for the security boundary and vulnerability reporting, and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
 
-## 谁在使用？
+## Who's Using It?
 
-如果你的公司或团队正在生产环境使用本网关，[欢迎登记](https://github.com/SoWhatI/mcp-asset-gateway/issues/new?template=used_by.yml)；经你确认后，使用案例将展示在这里。
+If your company or team runs this gateway in production, please [register your usage](https://github.com/SoWhatI/mcp-asset-gateway/issues/new?template=used_by.yml). Verified cases will be showcased here.
 
 ## Star History
 
@@ -108,6 +110,6 @@ python scripts/release_check.py
   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=SoWhatI/mcp-asset-gateway&type=Date" />
 </picture>
 
-## 许可
+## License
 
 [MIT](LICENSE)
