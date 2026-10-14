@@ -1,13 +1,16 @@
 import asyncio
 import contextlib
 import copy
+import json
 import os
+import re
 import shutil
 import ssl
 import tempfile
 from pathlib import Path
 
 import httpx
+import yaml
 
 from app.asset_types.base import RESOURCE_SCHEMA, AssetType, integer, obj, result, text, tool, upload_text
 from app.asset_types.k8s_exec import exec_stream
@@ -29,6 +32,20 @@ KINDS = {
     "cronjobs": ("batch/v1", "cronjobs"),
     "ingresses": ("networking.k8s.io/v1", "ingresses"),
 }
+# k8s_apply 固定白名单：部署清单常用的工作负载与配套资源；Secret 不进入只读 KINDS 表，
+# ServiceAccount/Role 等权限提升类与集群级对象一律拒绝，防止借用清单绕过 MCP 权限边界。
+APPLY_KINDS = {
+    "Secret": ("v1", "secrets"),
+    "ConfigMap": ("v1", "configmaps"),
+    "Service": ("v1", "services"),
+    "PersistentVolumeClaim": ("v1", "persistentvolumeclaims"),
+    "StatefulSet": ("apps/v1", "statefulsets"),
+    "Deployment": ("apps/v1", "deployments"),
+}
+MAX_APPLY_DOCS = 20
+APPLY_FIELD_MANAGER = "mcp-asset-gateway"
+# Server-Side Apply 前剥离的服务端归属字段，避免旧 uid/resourceVersion 等造成冲突。
+APPLY_STRIP_META = ("uid", "resourceVersion", "creationTimestamp", "generation", "managedFields", "selfLink")
 DNS_LABEL = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
 DNS_SUBDOMAIN = r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"
 # 命名空间可留空：留空表示账号不锁定命名空间，工具将自动提供 namespace 参数。
@@ -67,6 +84,51 @@ def target_namespace(ctx, args, required):
     if required:
         raise GatewayError("NAMESPACE_REQUIRED", "账号未锁定命名空间，调用时必须指定 namespace")
     return None
+
+
+def parse_manifest(value):
+    """解析 YAML 清单为文档列表；空文档跳过，文档数与基础结构在此把关。"""
+    try:
+        docs = [doc for doc in yaml.safe_load_all(value) if doc is not None]
+    except yaml.YAMLError as error:
+        raise GatewayError("MANIFEST_INVALID", f"YAML 解析失败：{str(error)[:200]}") from None
+    if not docs:
+        raise GatewayError("MANIFEST_INVALID", "清单为空：至少需要一个资源文档")
+    if len(docs) > MAX_APPLY_DOCS:
+        raise GatewayError("MANIFEST_INVALID", f"清单最多包含 {MAX_APPLY_DOCS} 个资源文档")
+    return docs
+
+
+def apply_target(doc, locked):
+    """校验单个清单文档并归一为 (kind, namespace, collection 路径, 可应用对象)。"""
+    if not isinstance(doc, dict):
+        raise GatewayError("MANIFEST_INVALID", "清单文档必须是映射对象")
+    kind = doc.get("kind")
+    if kind not in APPLY_KINDS:
+        raise GatewayError(
+            "KIND_DENIED",
+            "kind 不在 k8s_apply 白名单（" + "、".join(sorted(APPLY_KINDS)) + "）；"
+            "ServiceAccount、Role 等权限提升类与集群级资源一律拒绝，防止绕过 MCP 权限边界",
+            403,
+        )
+    api, plural = APPLY_KINDS[kind]
+    if doc.get("apiVersion") != api:
+        raise GatewayError("MANIFEST_INVALID", f"资源 {kind} 的 apiVersion 必须为 {api}")
+    meta = doc.get("metadata")
+    name = meta.get("name") if isinstance(meta, dict) else None
+    if not isinstance(name, str) or not re.fullmatch(DNS_SUBDOMAIN, name):
+        raise GatewayError("MANIFEST_INVALID", "清单文档缺少合法的 metadata.name（DNS 子域名）")
+    namespace = locked or str(meta.get("namespace") or "").strip()
+    if not namespace:
+        raise GatewayError("NAMESPACE_REQUIRED", "账号未锁定命名空间，清单文档必须显式声明 metadata.namespace")
+    if not re.fullmatch(DNS_LABEL, namespace):
+        raise GatewayError("NAMESPACE_INVALID", f"命名空间 {namespace} 不符合 DNS 标签格式")
+    meta = {key: value for key, value in meta.items() if key not in APPLY_STRIP_META}
+    meta["namespace"] = namespace
+    body = {key: value for key, value in doc.items() if key != "status"}
+    body["metadata"] = meta
+    # Server-Side Apply 的 PATCH 必须落在单个资源 URL 上：打到集合 URL（缺 /{name}）会 405。
+    return kind, namespace, f"{api_prefix(api)}/namespaces/{namespace}/{plural}/{name}", body
 
 
 def is_pem(value):
@@ -262,6 +324,13 @@ class KubernetesAssetType(AssetType):
                 # 留空表示不限制：允许下方固定资源类型表中的全部类型。
                 "description": "每行一项；留空表示不限制，允许全部内置资源类型",
             },
+            "allow_apply": {
+                "type": "boolean",
+                "title": "允许应用清单",
+                "default": False,
+                "description": "开启后 k8s_apply 可创建/更新 Secret、ConfigMap、Service、PVC、StatefulSet、Deployment"
+                "（固定白名单，仅限账号命名空间边界内；不包含 ServiceAccount/Role 等权限类资源）",
+            },
             "max_log_lines": integer("日志行数上限", 1, 5000, default=500),
         }
     )
@@ -316,6 +385,20 @@ class KubernetesAssetType(AssetType):
             ["pod", "command"],
             readonly=False,
         ),
+        tool(
+            "k8s_apply",
+            "以 Server-Side Apply 幂等创建或更新命名空间内资源，重复应用不产生副作用，不会删除未提及的资源。"
+            "仅支持 Secret、ConfigMap、Service、PersistentVolumeClaim、StatefulSet、Deployment（固定白名单）；"
+            "需账号策略开启 allow_apply，凭据需具备 patch/create RBAC 权限。"
+            "manifest 为单个或多个 YAML 文档（--- 分隔），最多 20 个；"
+            "账号已锁定命名空间时 metadata.namespace 被强制覆盖，未锁定时每个文档必须显式声明。",
+            {
+                "manifest": text("YAML 清单", minLength=1, maxLength=262144),
+                "dry_run": {"type": "boolean", "title": "仅校验不落盘", "default": False},
+            },
+            ["manifest"],
+            readonly=False,
+        ),
     ]
 
     def validate_connection(self, network, connection):
@@ -351,7 +434,9 @@ class KubernetesAssetType(AssetType):
             properties = schema["properties"]
             if "kind" in properties:
                 properties["kind"]["enum"] = allowed
-            if unlocked:
+            if unlocked and spec["name"] == "k8s_apply":
+                spec["description"] += " 账号未锁定命名空间：清单文档必须显式声明 metadata.namespace。"
+            elif unlocked:
                 required = spec["name"] in NAMESPACE_REQUIRED_TOOLS
                 properties["namespace"] = text(
                     "命名空间",
@@ -380,7 +465,7 @@ class KubernetesAssetType(AssetType):
             return None
         return (ctx.credential.get("client_certificate_file", ""), ctx.credential.get("client_key_file", ""))
 
-    async def request(self, ctx, path, params=None, maximum=None):
+    async def request(self, ctx, path, params=None, maximum=None, method="GET", content=None, content_type=None):
         cfg = ctx.asset["connection"]
         with tls_files(cfg.get("ca_file"), self.certificate(ctx)) as tls_context:
             transport = PinnedTransport(
@@ -391,14 +476,19 @@ class KubernetesAssetType(AssetType):
             timeout = httpx.Timeout(
                 ctx.remaining(), connect=min(ctx.remaining(), ctx.limits["connect_timeout_seconds"])
             )
+            headers = self.headers(ctx)
+            if content_type:
+                headers = {**headers, "Content-Type": content_type}
             async with httpx.AsyncClient(
                 transport=transport,
-                headers=self.headers(ctx),
+                headers=headers,
                 follow_redirects=False,
                 trust_env=False,
                 timeout=timeout,
             ) as client:
-                response = await client.get(cfg["url"].rstrip("/") + path, params=params)
+                response = await client.request(
+                    method, cfg["url"].rstrip("/") + path, params=params, content=content
+                )
         ctx.remaining()
         if response.status_code >= 400:
             raise response_error(response)
@@ -474,6 +564,58 @@ class KubernetesAssetType(AssetType):
         with tls_files(ctx.asset["connection"].get("ca_file"), self.certificate(ctx)) as tls_context:
             return await exec_stream(ctx, path, args["command"], args.get("container"), self.headers(ctx), tls_context)
 
+    async def apply_manifest(self, ctx, args):
+        if not ctx.account["policy"].get("allow_apply"):
+            raise GatewayError(
+                "TOOL_DENIED", "该账号未开启清单应用：需在账号策略开启 allow_apply 后才能创建或更新资源", 403
+            )
+        locked = namespace_of(ctx.account)
+        applied = []
+        for index, doc in enumerate(parse_manifest(args["manifest"]), 1):
+            kind, namespace, path, body = apply_target(doc, locked)
+            params = {"fieldManager": APPLY_FIELD_MANAGER}
+            if args.get("dry_run"):
+                params["dryRun"] = "All"
+            try:
+                response = await self.request(
+                    ctx,
+                    path,
+                    params=params,
+                    method="PATCH",
+                    content=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                    content_type="application/apply-patch+yaml",
+                )
+            except GatewayError as error:
+                if applied:
+                    raise GatewayError(
+                        error.code,
+                        f"第 {index} 个文档（{kind}）应用失败，之前 {len(applied)} 个已生效且不回滚：{error.message}",
+                        error.status,
+                    ) from None
+                raise
+            try:
+                data = response.json()
+                meta = data.get("metadata") or {}
+            except ValueError:
+                raise response_error(response) from None
+            applied.append(
+                {
+                    "kind": kind,
+                    "name": meta.get("name") or body["metadata"]["name"],
+                    "namespace": namespace,
+                    "created": response.status_code == 201,
+                    "uid": meta.get("uid"),
+                    "resource_version": meta.get("resourceVersion"),
+                }
+            )
+        return {
+            "namespace": locked or "*",
+            "dry_run": bool(args.get("dry_run")),
+            "applied": applied,
+            "count": len(applied),
+            "truncated": False,
+        }
+
     async def execute(self, name, args, ctx, spec):
         async with asyncio.timeout(ctx.remaining()):
             try:
@@ -485,6 +627,8 @@ class KubernetesAssetType(AssetType):
                     payload = await self.pod_logs(ctx, args)
                 elif name == "k8s_exec":
                     payload = await self.pod_exec(ctx, args)
+                elif name == "k8s_apply":
+                    payload = await self.apply_manifest(ctx, args)
                 else:
                     raise GatewayError("TOOL_DENIED", "工具不存在或未授权", 403)
             except GatewayError:

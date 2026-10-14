@@ -13,7 +13,7 @@ A self-hosted asset gateway that provides AI clients with a single, controlled M
 | FileBrowser | SFTP-based restricted directory browsing and file reading |
 | MCP | Forwards upstream tools with per-account approval of tool definition versions |
 | Redis | Key scanning and reading within allow-list patterns; write tools enabled explicitly per account policy |
-| Kubernetes | Resource listing, details, Pod logs, and non-interactive `k8s_exec`; token or client-certificate auth — see [Kubernetes assets](docs/asset-kubernetes.md) (Chinese) |
+| Kubernetes | Resource listing, details, Pod logs, non-interactive `k8s_exec`, and idempotent manifest `k8s_apply` (Server-Side Apply, allow-listed kinds); token or client-certificate auth — see [Kubernetes assets](docs/asset-kubernetes.md) (Chinese) |
 | Git repositories | Gateway-hosted read-only code mirrors: code search, file reading, commit history, diffs, directory tree, and branch listing |
 | Jenkins | Direct Jenkins HTTP API calls without any MCP plugin; 19 tools for jobs, builds, logs, tests, SCM, and Replay — see [Jenkins assets](docs/asset-jenkins.md) (Chinese) |
 | Admin console | Multi-dimensional search in the authorization matrix, group management, tool select-all/clear, parameter allow/block lists (exact/regex), debugging, and audit export |
@@ -22,7 +22,7 @@ A self-hosted asset gateway that provides AI clients with a single, controlled M
 ## Authorization & Security Model
 
 - An authorization group links multiple clients with multiple asset accounts; each client in the group gets the selected tools that actually exist on each account. Permissions across groups are merged (union), and identically named tools are published once. Full rules: [Authorization groups & parameter rules](docs/authorization.md) (Chinese).
-- Tools are unauthorized by default; write operations and high-risk tools (MySQL `allow_write`, Jenkins write tools, `k8s_exec`, etc.) must be checked explicitly in an authorization group.
+- Tools are unauthorized by default; write operations and high-risk tools (MySQL `allow_write`, Jenkins write tools, `k8s_exec`, `k8s_apply`, etc.) must be checked explicitly in an authorization group.
 - Client tokens are shown only once; credentials are stored encrypted; keep the master key separate from the database.
 - Optional egress registration restricts reachable targets; loopback, link-local, multicast, and cloud metadata addresses are always denied. An allow-list is not a substitute for a firewall.
 

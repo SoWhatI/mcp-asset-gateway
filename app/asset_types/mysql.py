@@ -159,7 +159,12 @@ class BoundedConnection(pymysql.connections.Connection):
 
 def tls_failure(error):
     """判断异常是否为 TLS 协商失败（自动模式回退与错误分类共用）。"""
-    return isinstance(error, ssl.SSLError) or "SSL:" in str(error)
+    # pymysql 在「客户端要求 TLS 但服务端握手包未声明 SSL 能力」时报 2026，字符串不含 "SSL:"，需按错误码识别。
+    return (
+        isinstance(error, ssl.SSLError)
+        or "SSL:" in str(error)
+        or (isinstance(error, pymysql.err.OperationalError) and bool(error.args) and error.args[0] == 2026)
+    )
 
 
 def parse_version(version):
@@ -210,6 +215,12 @@ def connect_error(error):
             return GatewayError("MYSQL_DATABASE_MISSING", "默认数据库不存在：请检查账号配置中的 database", 502)
         if code == 2013:
             return GatewayError("MYSQL_TIMEOUT", "MySQL 连接中断或超时：请检查网络与服务器状态", 502)
+        if code == 2026:
+            return GatewayError(
+                "MYSQL_TLS_FAILED",
+                "目标 MySQL 未启用 TLS：可将该资产 tls_mode 改为 PREFERRED（自动回退明文）或 DISABLED",
+                502,
+            )
     return GatewayError("MYSQL_UNREACHABLE", "无法建立 MySQL 连接：请检查地址、端口与网络策略", 502)
 
 
@@ -220,8 +231,22 @@ def query_error(error):
         return GatewayError("MYSQL_TIMEOUT", "查询超时或连接中断：请缩小范围并检查网络", 502)
     if isinstance(error, pymysql.err.Error) and error.args:
         code = error.args[0]
-        message = error.args[1] if len(error.args) > 1 else str(error)
-        return GatewayError("MYSQL_QUERY_FAILED", f"SQL 执行失败（{code}）：{str(message)[:300]}", 502)
+        message = str(error.args[1] if len(error.args) > 1 else error)[:300]
+        if code == 1142:
+            # 无权限账号查询不存在的表时，MySQL 同样返回 1142 而非 1146（不泄露表存在性），避免被误导为“缺权限”。
+            return GatewayError(
+                "MYSQL_QUERY_FAILED",
+                f"SQL 执行失败（1142）：{message}；注意：账号无对应权限时，不存在的表也返回 1142 而非 1146，"
+                "请先用 list_tables（可用 pattern 模糊搜索）核实表名，再确认账号授权范围",
+                502,
+            )
+        if code == 1044:
+            return GatewayError(
+                "MYSQL_QUERY_FAILED",
+                f"SQL 执行失败（1044）：{message}；账号对目标数据库无访问权限，请核对 database 参数与账号授权范围",
+                502,
+            )
+        return GatewayError("MYSQL_QUERY_FAILED", f"SQL 执行失败（{code}）：{message}", 502)
     return GatewayError("MYSQL_QUERY_FAILED", "SQL 执行失败：请检查语句与远端对象权限", 502)
 
 
@@ -383,6 +408,14 @@ class MySQLAssetType(AssetType):
             if len(rows) >= limit:
                 truncated = True
                 break
+            if len(raw) != len(columns):
+                # 表头与行宽不一致属远端协议异常：宁可整体失败也不返回错位数据。
+                raise GatewayError(
+                    "MYSQL_PROTOCOL_MISMATCH",
+                    f"结果集异常：表头 {len(columns)} 列与第 {len(rows) + 1} 行 {len(raw)} 列不一致，"
+                    "返回已丢弃；请重试，若持续出现请联系管理员核查远端",
+                    502,
+                )
             row = [cell(value, ctx) for value in raw]
             size += len(dumps(row).encode())
             if size > budget:
@@ -439,6 +472,8 @@ class MySQLAssetType(AssetType):
                 )
                 return result(
                     {
+                        # 实际生效的数据库：留空时为账号默认库；便于发现同一 SQL 在不同库上列集不一致的情况。
+                        "database": args.get("database") or db,
                         "columns": cols,
                         "rows": rows,
                         "row_count": len(rows),

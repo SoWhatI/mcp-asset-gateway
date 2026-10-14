@@ -172,6 +172,8 @@ SSH/SFTP 主机指纹校验默认关闭（`SSH_HOST_KEY_ENFORCE=false`）：创�
 
 Kubernetes `k8s_exec` 还要求账号允许 `pods` 和集群 RBAC 允许 `pods/exec`。`command` 为 argv 数组，例如 `["uname","-a"]`，不会隐式使用 shell；必须单独勾选该工具。上传 PEM 与填写容器内证书路径均可，内容须完整且证书与私钥匹配。
 
+Kubernetes `k8s_apply` 需在账号策略开启「允许应用清单」（`allow_apply`，默认关闭）并在授权组显式勾选，集群凭据需具备目标资源的 patch/create 权限。仅支持 Secret、ConfigMap、Service、PVC、StatefulSet、Deployment（固定白名单，ServiceAccount/Role 等权限类资源一律拒绝）；账号锁定命名空间时清单 namespace 被强制覆盖，未锁定时每个文档必须显式声明。重复应用幂等且不删除未提及资源；不确定时先用 `dry_run` 校验。详见 [Kubernetes 资产](docs/asset-kubernetes.md)。
+
 Git 仓库资产的凭证为 SSH 私钥或 HTTPS 令牌二选一；副本由网关维护在数据卷内，首次调用触发后台克隆，之后工具调用按 `refresh_interval_seconds` 检查并触发后台 fetch，设为 0 禁用自动刷新（不新增独立定时任务）。启用出站登记时，代码仓库地址与端口需先登记在 `OUTBOUND_ALLOWLIST`。
 
 Git HTTP(S) 需要系统 Git 支持 `http.curloptResolve`，不支持会返回 `GIT_UNSUPPORTED`；子进程优先使用 `/usr/bin`、`/bin` 的 Git/OpenSSH。HTTPS 使用系统信任链，不支持关闭证书验证。缓存 `.git/config` 不可手工增加代理、helper 或 URL rewrite；修改资产仓库地址/分支后，需要在停机并保留备份的前提下重建该账号的网关副本，不能修改安全检查来放行旧配置。

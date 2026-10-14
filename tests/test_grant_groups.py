@@ -163,10 +163,14 @@ def test_per_account_tool_entries(admin, app, seeded, monkeypatch):
         return result({"ok": True})
 
     monkeypatch.setattr(gateway.types["mysql"], "execute_sync", execute)
-    # ro 条目没有 describe_table：指定 target=ro 应被拒绝。
+    # ro 条目没有 describe_table：指定 target=ro 应被拒绝，错误信息须列出实时可用账号，便于发现目录/授权不一致。
     denied = rpc(admin, token, "tools/call", {"name": "describe_table", "arguments": {"target": "ro"}}).json()["result"]
     assert denied.get("isError")
     assert calls == []
+    detail = json.loads(denied["content"][0]["text"])
+    assert detail["code"] == "TARGET_DENIED"
+    assert "第二账号（ro2）" in detail["message"] and "（ro）" not in detail["message"]
+    assert "目录" in detail["message"]
     assert not rpc(admin, token, "tools/call", {"name": "list_tables", "arguments": {}}).json()["result"].get("isError")
     assert calls == [("list_tables", "ro")]
     # 条目互换工具后权限立即跟随。

@@ -179,6 +179,22 @@ def test_mysql_execute_query_write_denied_before_connect(monkeypatch):
     assert not state["created"]
 
 
+def test_mysql_execute_query_reports_resolved_database(monkeypatch):
+    """结果附带实际生效的 database：同一 SQL 在不同库上列集不一致时可立即发现。"""
+    fake_mysql(monkeypatch, cursor_description=[("id",), ("name",)], cursor_rows=[(1, "x")])
+    adapter = MySQLAssetType()
+    payload = json.loads(
+        adapter.execute_sync("execute_query", {"sql": "SELECT id,name FROM t"}, mysql_context())["content"][0]["text"]
+    )
+    assert payload["database"] == "demo" and payload["columns"] == ["id", "name"]
+    payload = json.loads(
+        adapter.execute_sync(
+            "execute_query", {"sql": "SELECT id,name FROM t", "database": "other_db"}, mysql_context()
+        )["content"][0]["text"]
+    )
+    assert payload["database"] == "other_db"
+
+
 def test_outer_limit_and_cells(config):
     assert validate_sql("SELECT * FROM (SELECT 1 LIMIT 1) q LIMIT 999999", 7)[0].endswith("LIMIT 8")
     ctx = context(config, max_cell_chars=10)
@@ -385,6 +401,28 @@ def test_small_query_output_budget(config):
     assert not cut
 
 
+def test_query_rejects_row_width_mismatch(config):
+    """远端结果集行宽与表头不一致时整体失败（MYSQL_PROTOCOL_MISMATCH），不向客户端传递错位数据。"""
+
+    class Cursor:
+        description = [("a",), ("b",)]
+
+        def execute(self, *args):
+            pass
+
+        def __iter__(self):
+            return iter([(1, 2), (3, 4, 5)])
+
+        def close(self):
+            pass
+
+    conn = SimpleNamespace(cursor=lambda: Cursor())
+    with pytest.raises(GatewayError) as exc:
+        MySQLAssetType().query(conn, "SELECT a,b", None, context(config), 10)
+    assert exc.value.code == "MYSQL_PROTOCOL_MISMATCH"
+    assert "表头 2 列" in exc.value.message and "3 列" in exc.value.message
+
+
 def test_mysql_connect_error_mapping():
     tls = connect_error(
         pymysql.err.OperationalError(
@@ -402,6 +440,9 @@ def test_mysql_connect_error_mapping():
     )
     assert legacy.code == "MYSQL_TLS_FAILED"
     assert "WRONG_VERSION_NUMBER" in legacy.message and "tls_mode" in legacy.message
+    unsupported = connect_error(SERVER_NO_TLS)
+    assert unsupported.code == "MYSQL_TLS_FAILED"
+    assert "tls_mode" in unsupported.message
     assert connect_error(ssl.SSLError(1, "[SSL: UNSAFE_LEGACY_RENEGOTIATION_DISABLED]")).code == "MYSQL_TLS_FAILED"
     assert connect_error(pymysql.err.OperationalError(1045, "Access denied")).code == "MYSQL_AUTH_FAILED"
     assert connect_error(pymysql.err.OperationalError(1049, "Unknown database 'x'")).code == "MYSQL_DATABASE_MISSING"
@@ -418,6 +459,15 @@ def test_mysql_query_error_mapping():
     missing = query_error(pymysql.err.ProgrammingError(1146, "Table 'db.t' doesn't exist"))
     assert missing.code == "MYSQL_QUERY_FAILED"
     assert "1146" in missing.message
+    denied = query_error(
+        pymysql.err.ProgrammingError(
+            1142, "SELECT command denied to user 'u'@'h' for table 'antsport_payment_order'"
+        )
+    )
+    assert denied.code == "MYSQL_QUERY_FAILED"
+    assert "1142" in denied.message and "1146" in denied.message and "list_tables" in denied.message
+    schema_denied = query_error(pymysql.err.ProgrammingError(1044, "Access denied for user 'u'@'h' to database 'x'"))
+    assert "1044" in schema_denied.message and "database" in schema_denied.message
     assert query_error(pymysql.err.OperationalError(2013, "Lost connection")).code == "MYSQL_TIMEOUT"
     assert query_error(pymysql.err.OperationalError(3024, "interrupted")).code == "MYSQL_TIMEOUT"
     assert query_error(TimeoutError()).code == "MYSQL_TIMEOUT"
@@ -430,10 +480,13 @@ TLS_HANDSHAKE_ERROR = pymysql.err.OperationalError(
     2003, "Can't connect to MySQL server on 'db' ([SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1016))"
 )
 
+SERVER_NO_TLS = pymysql.err.OperationalError(2026, "SSL is required but the server doesn't support it")
+
 
 def test_mysql_tls_failure_detection():
     assert mysql.tls_failure(TLS_HANDSHAKE_ERROR)
     assert mysql.tls_failure(ssl.SSLError(1, "[SSL: UNSAFE_LEGACY_RENEGOTIATION_DISABLED]"))
+    assert mysql.tls_failure(SERVER_NO_TLS)
     assert not mysql.tls_failure(pymysql.err.OperationalError(1045, "Access denied"))
     assert not mysql.tls_failure(TimeoutError())
 
@@ -465,12 +518,14 @@ def mysql_context(tls_mode="PREFERRED", policy=None, **limits):
     )
 
 
-def fake_mysql(monkeypatch, tls_error=None, plain_error=None, cursor_rowcount=-1):
-    """替换 BoundedConnection 与底层 socket：可分别注入 TLS/明文连接失败。"""
+def fake_mysql(
+    monkeypatch, tls_error=None, plain_error=None, cursor_rowcount=-1, cursor_description=None, cursor_rows=()
+):
+    """替换 BoundedConnection 与底层 socket：可分别注入 TLS/明文连接失败，也可注入结果集行。"""
     state = {"created": [], "statements": []}
 
     class FakeCursor:
-        description = None
+        description = cursor_description
         rowcount = cursor_rowcount
 
         def execute(self, statement, parameters=None):
@@ -480,7 +535,7 @@ def fake_mysql(monkeypatch, tls_error=None, plain_error=None, cursor_rowcount=-1
             pass
 
         def __iter__(self):
-            return iter(())
+            return iter(cursor_rows)
 
     class FakeConnection:
         server_version = "5.7.26-log"
@@ -515,6 +570,14 @@ def test_mysql_preferred_tls_falls_back_to_plaintext(monkeypatch):
     assert any(statement.startswith("SET SESSION MAX_EXECUTION_TIME=") for statement in state["statements"])
 
 
+def test_mysql_preferred_falls_back_when_server_lacks_tls(monkeypatch):
+    """目标未启用 TLS 时（pymysql 2026，字符串不含 "SSL:"），自动模式必须回退明文而不是报 UNREACHABLE。"""
+    state = fake_mysql(monkeypatch, tls_error=SERVER_NO_TLS)
+    conn = MySQLAssetType().connect(mysql_context("PREFERRED"))
+    assert [item.tls for item in state["created"]] == [True, False]
+    assert conn is state["created"][1]
+
+
 def test_mysql_preferred_fallback_reports_plaintext_error(monkeypatch):
     state = fake_mysql(
         monkeypatch, tls_error=TLS_HANDSHAKE_ERROR, plain_error=pymysql.err.OperationalError(1045, "Access denied")
@@ -527,6 +590,15 @@ def test_mysql_preferred_fallback_reports_plaintext_error(monkeypatch):
 
 def test_mysql_required_tls_does_not_fall_back(monkeypatch):
     state = fake_mysql(monkeypatch, tls_error=TLS_HANDSHAKE_ERROR)
+    with pytest.raises(GatewayError) as exc:
+        MySQLAssetType().connect(mysql_context("REQUIRED"))
+    assert exc.value.code == "MYSQL_TLS_FAILED"
+    assert [item.tls for item in state["created"]] == [True]
+
+
+def test_mysql_required_tls_reports_target_lack(monkeypatch):
+    """REQUIRED 模式对未启用 TLS 的目标：报 MYSQL_TLS_FAILED 并给出 tls_mode 指引，不落入 UNREACHABLE。"""
+    state = fake_mysql(monkeypatch, tls_error=SERVER_NO_TLS)
     with pytest.raises(GatewayError) as exc:
         MySQLAssetType().connect(mysql_context("REQUIRED"))
     assert exc.value.code == "MYSQL_TLS_FAILED"
@@ -848,8 +920,11 @@ def test_k8s_catalog_unlocked_adds_namespace_parameter():
     kind = kubernetes.KubernetesAssetType()
     unlocked = kind.catalog({"config": {}, "policy": {"kinds": ["pods"]}})
     schemas = {spec["name"]: spec["inputSchema"] for spec in unlocked}
-    assert set(schemas) == {"k8s_list_resources", "k8s_get_resource", "k8s_pod_logs", "k8s_exec"}
-    assert all("namespace" in schema["properties"] for schema in schemas.values())
+    assert set(schemas) == {"k8s_list_resources", "k8s_get_resource", "k8s_pod_logs", "k8s_exec", "k8s_apply"}
+    # k8s_apply 的目标命名空间在 manifest 内声明，不注入 namespace 参数。
+    assert all(
+        "namespace" in schema["properties"] for name, schema in schemas.items() if name != "k8s_apply"
+    )
     # 列表留空=全部命名空间；读资源与日志必须指定。
     assert "namespace" not in schemas["k8s_list_resources"]["required"]
     assert "namespace" in schemas["k8s_get_resource"]["required"]
@@ -1226,3 +1301,144 @@ async def test_k8s_unlocked_namespace_listing_and_required(config, monkeypatch):
         (await kind.execute("k8s_pod_logs", {"pod": "web-1", "namespace": "dev"}, ctx, None))["content"][0]["text"]
     )
     assert captured[-1] == "/api/v1/namespaces/dev/pods/web-1/log"
+
+
+def test_k8s_catalog_includes_apply_tool():
+    kind = kubernetes.KubernetesAssetType()
+    locked = {spec["name"]: spec for spec in kind.catalog({"config": {"namespace": "public"}, "policy": {}})}
+    assert "k8s_apply" in locked
+    apply_spec = locked["k8s_apply"]
+    assert apply_spec["annotations"]["readOnlyHint"] is False
+    # namespace 属于 manifest 内部字段：无论账号是否锁定，工具 schema 都不暴露 namespace 参数。
+    assert "namespace" not in apply_spec["inputSchema"]["properties"]
+    assert apply_spec["inputSchema"]["properties"]["manifest"]["maxLength"] == 262144
+    unlocked = {spec["name"]: spec for spec in kind.catalog({"config": {}, "policy": {}})}
+    assert "namespace" not in unlocked["k8s_apply"]["inputSchema"]["properties"]
+    assert all(
+        "namespace" in spec["inputSchema"]["properties"]
+        for name, spec in unlocked.items()
+        if name != "k8s_apply"
+    )
+    # Secret 仍不进入只读资源类型表，只属于 apply 白名单。
+    assert "secrets" not in kubernetes.KINDS and "Secret" in kubernetes.APPLY_KINDS
+
+
+async def test_k8s_apply_requires_allow_apply(config):
+    kind = kubernetes.KubernetesAssetType()
+    ctx = k8s_context(config)
+    with pytest.raises(GatewayError) as exc:
+        await kind.execute("k8s_apply", {"manifest": "apiVersion: v1\nkind: Secret\n"}, ctx, None)
+    assert (exc.value.code, exc.value.status) == ("TOOL_DENIED", 403)
+
+
+async def test_k8s_apply_happy_path_locked_namespace(config, monkeypatch):
+    kind = kubernetes.KubernetesAssetType()
+    ctx = k8s_context(config)
+    ctx.account["config"]["namespace"] = "public"
+    ctx.account["policy"]["allow_apply"] = True
+    captured = []
+
+    async def fake_request(self, ctx, path, params=None, maximum=None, method="GET", content=None, content_type=None):
+        captured.append((method, path, params, content_type, json.loads(content) if content else None))
+        return httpx.Response(
+            201 if len(captured) == 1 else 200,
+            json={"metadata": {"name": "web", "namespace": "public", "uid": "u1", "resourceVersion": "42"}},
+        )
+
+    monkeypatch.setattr(kubernetes.KubernetesAssetType, "request", fake_request)
+    manifest = (
+        "apiVersion: v1\n"
+        "kind: Secret\n"
+        "metadata:\n"
+        "  name: web\n"
+        "  namespace: evil\n"
+        "  uid: old-uid\n"
+        "stringData:\n"
+        "  token: test-only\n"
+        "---\n"
+        "apiVersion: apps/v1\n"
+        "kind: StatefulSet\n"
+        "metadata:\n"
+        "  name: web\n"
+        "status:\n"
+        "  replicas: 3\n"
+    )
+    payload = json.loads((await kind.execute("k8s_apply", {"manifest": manifest}, ctx, None))["content"][0]["text"])
+    assert payload["count"] == 2 and payload["namespace"] == "public" and payload["dry_run"] is False
+    method, path, params, content_type, body = captured[0]
+    assert (method, content_type) == ("PATCH", "application/apply-patch+yaml")
+    assert path == "/api/v1/namespaces/public/secrets/web"
+    assert params["fieldManager"] == "mcp-asset-gateway" and "dryRun" not in params
+    # 锁定命名空间覆盖文档值，服务端归属字段与 status 被剥离。
+    assert body["metadata"]["namespace"] == "public" and "uid" not in body["metadata"]
+    assert captured[1][1] == "/apis/apps/v1/namespaces/public/statefulsets/web"
+    assert "status" not in captured[1][4]
+    assert payload["applied"][0]["created"] is True and payload["applied"][0]["uid"] == "u1"
+    assert payload["applied"][1]["created"] is False and payload["applied"][1]["resource_version"] == "42"
+    # dry_run 转为服务端 dryRun=All。
+    await kind.execute("k8s_apply", {"manifest": manifest, "dry_run": True}, ctx, None)
+    assert captured[-1][2]["dryRun"] == "All"
+
+
+async def test_k8s_apply_guardrails(config):
+    kind = kubernetes.KubernetesAssetType()
+    ctx = k8s_context(config)
+    ctx.account["policy"]["allow_apply"] = True
+    ctx.account["config"].pop("namespace")
+    for api, manifest_kind in (("v1", "ServiceAccount"), ("v1", "Pod"), ("networking.k8s.io/v1", "Ingress")):
+        with pytest.raises(GatewayError) as exc:
+            await kind.execute(
+                "k8s_apply",
+                {"manifest": f"apiVersion: {api}\nkind: {manifest_kind}\nmetadata:\n  name: x\n"},
+                ctx,
+                None,
+            )
+        assert (exc.value.code, exc.value.status) == ("KIND_DENIED", 403)
+    # 未锁定命名空间且文档未声明时拒绝，避免默认投递到 default。
+    with pytest.raises(GatewayError) as exc:
+        await kind.execute("k8s_apply", {"manifest": "apiVersion: v1\nkind: Secret\nmetadata:\n  name: x\n"}, ctx, None)
+    assert exc.value.code == "NAMESPACE_REQUIRED"
+    ctx.account["config"]["namespace"] = "public"
+    long_manifest = "\n---\n".join(
+        f"apiVersion: v1\nkind: Secret\nmetadata:\n  name: doc-{index}" for index in range(21)
+    )
+    for bad in (
+        "apiVersion: v1\nkind: StatefulSet\nmetadata:\n  name: x\n",  # apiVersion 不匹配
+        "apiVersion: v1\nkind: Secret\nmetadata:\n  name: Bad_Name\n",  # 名称非法
+        "kind: [unclosed\n",  # YAML 语法错误
+        "---\n---\n",  # 全空文档
+        long_manifest,  # 超过文档上限
+    ):
+        with pytest.raises(GatewayError) as exc:
+            await kind.execute("k8s_apply", {"manifest": bad}, ctx, None)
+        assert exc.value.code == "MANIFEST_INVALID"
+
+
+async def test_k8s_apply_partial_failure_reports_progress(config, monkeypatch):
+    kind = kubernetes.KubernetesAssetType()
+    ctx = k8s_context(config)
+    ctx.account["config"]["namespace"] = "public"
+    ctx.account["policy"]["allow_apply"] = True
+    calls = []
+
+    async def fake_request(self, ctx, path, params=None, maximum=None, method="GET", content=None, content_type=None):
+        calls.append(path)
+        response = (
+            httpx.Response(403, json={"message": "statefulsets is forbidden"})
+            if len(calls) == 2
+            else httpx.Response(200, json={"metadata": {"name": "ok", "namespace": "public"}})
+        )
+        if response.status_code >= 400:
+            raise kubernetes.response_error(response)
+        return response
+
+    monkeypatch.setattr(kubernetes.KubernetesAssetType, "request", fake_request)
+    manifest = (
+        "apiVersion: v1\nkind: Service\nmetadata:\n  name: ok\n---\n"
+        "apiVersion: apps/v1\nkind: StatefulSet\nmetadata:\n  name: blocked\n---\n"
+        "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: never\n"
+    )
+    with pytest.raises(GatewayError) as exc:
+        await kind.execute("k8s_apply", {"manifest": manifest}, ctx, None)
+    assert exc.value.code == "K8S_FORBIDDEN" and "之前 1 个已生效" in exc.value.message
+

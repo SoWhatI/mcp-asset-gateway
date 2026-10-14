@@ -258,7 +258,20 @@ class Gateway:
                 if target is not None:
                     chosen = next((c for c in candidates if c["account"]["id"] == target), None)
                     if chosen is None:
-                        raise GatewayError("TARGET_DENIED", "target 不存在或未授权", 403)
+                        # 工具目录可能因授权调整或跨实例同名配置而过期：把实时授权清单带进错误，便于调用方自诊断。
+                        available = "、".join(
+                            f"{c['asset']['name']} · {c['account']['name']}（{c['account']['id']}）"
+                            for c in candidates[:5]
+                        )
+                        if len(candidates) > 5:
+                            available += f" 等 {len(candidates)} 个账号"
+                        raise GatewayError(
+                            "TARGET_DENIED",
+                            f"target 不存在或未授权：该工具当前已授权账号：{available}。"
+                            "若客户端缓存的工具目录仍列出所填账号，说明目录已过期或该账号未授权此工具，"
+                            "请重新获取工具列表并核对授权组",
+                            403,
+                        )
             validate(chosen["spec"]["inputSchema"], arguments)
             enforce_rules(chosen["grants"], chosen["spec"]["name"], arguments, chosen["spec"]["inputSchema"])
             validate(chosen["spec"]["inputSchema"], arguments)

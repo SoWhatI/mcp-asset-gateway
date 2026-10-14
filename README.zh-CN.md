@@ -13,7 +13,7 @@
 | FileBrowser | 基于 SFTP 的受限目录浏览与文件读取 |
 | MCP | 转发上游工具，按账号批准工具定义版本 |
 | Redis | 在白名单模式范围内扫描与读取键，写工具按账号策略显式开启 |
-| Kubernetes | 资源列表、详情、Pod 日志与非交互 `k8s_exec`；Token 或客户端证书认证，详见 [Kubernetes 资产](docs/asset-kubernetes.md) |
+| Kubernetes | 资源列表、详情、Pod 日志、非交互 `k8s_exec` 与幂等清单应用 `k8s_apply`（Server-Side Apply，固定类型白名单）；Token 或客户端证书认证，详见 [Kubernetes 资产](docs/asset-kubernetes.md) |
 | Git 仓库 | 网关托管只读代码副本：代码搜索、文件读取、提交历史、差异、目录树与分支列表 |
 | Jenkins | 直接调用 Jenkins HTTP API，无需 MCP 插件；19 项任务、构建、日志、测试、SCM 与 Replay 工具，详见 [Jenkins 资产](docs/asset-jenkins.md) |
 | 管理控制台 | 授权矩阵多维搜索、组管理、工具全选/取消全选、参数黑白名单（精确/正则）、调试和审计导出 |
@@ -22,7 +22,7 @@
 ## 授权与安全模型
 
 - 授权组关联多个客户端与多个资产账号，组内每个客户端获得每个账号上被选中的、实际存在的工具权限；多组取并集，同名工具不重复发布。完整规则见 [授权组与参数规则](docs/authorization.md)。
-- 工具默认不授权；写操作与高危工具（MySQL `allow_write`、Jenkins 写工具、`k8s_exec` 等）必须在授权组显式勾选。
+- 工具默认不授权；写操作与高危工具（MySQL `allow_write`、Jenkins 写工具、`k8s_exec`、`k8s_apply` 等）必须在授权组显式勾选。
 - 客户端令牌仅展示一次，凭据加密存储；主密钥与数据库分开保管。
 - 可选出站登记约束网关可达目标，并始终禁止回环、链路本地、组播与云元数据地址；允许列表不能替代防火墙。
 
