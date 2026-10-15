@@ -4,7 +4,7 @@
 数据库自举启动，通过 stdio 传输（按行分隔的 JSON-RPC）提供 MCP 协议——这
 是目录检查（Glama 等）与本地直连场景的标准形态。
 
-- 未提供客户端令牌：工具列表为空、工具调用被拒绝（未接入授权组的真实状态）。
+- 未提供客户端令牌：返回各内置类型的目录预览（静态工具形态，不含账号数据），工具调用被拒绝（未接入授权组的真实状态）。
 - 设置 GATEWAY_CLIENT_TOKEN：与部署一致的主密钥 + 有效客户端令牌，工具列表
   与调用行为同 HTTP 端点，可用于把网关作为本地 stdio 服务器接入 AI 客户端。
 - 部署形态不受影响：compose 经 env_file 提供 GATEWAY_MASTER_KEY，镜像入口
@@ -12,6 +12,7 @@
 """
 
 import asyncio
+import copy
 import json
 import os
 import sys
@@ -54,6 +55,27 @@ def error_payload(identity, error):
     }
 
 
+def preview_tools(gateway):
+    """自举目录预览：聚合各内置类型的静态工具目录，供目录站与直连客户端了解工具形态。
+
+    仅含静态定义（k8s 呈现未锁定命名空间形态、Redis 呈现只读形态），动态目录型
+    （上游 MCP）与不可用类型不参与；名称以「类型__工具」避免跨类型重名，调用仍受
+    部署实例授权组管控。经 gateway.types 适配 dict 与注册表两种结构。
+    """
+    account = {"policy": {}, "config": {}}
+    tools = []
+    for kind in gateway.types.values():
+        if not getattr(kind, "available", True) or kind.proxied:
+            continue
+        for spec in kind.catalog(account):
+            spec = copy.deepcopy(spec)
+            spec.pop("spec_hash", None)
+            spec["name"] = f"{kind.type_id}__{spec['name']}"
+            spec["description"] = f"【{kind.display_name}·目录预览】{spec['description']}"
+            tools.append(spec)
+    return {"tools": tools}
+
+
 async def handle(gateway, client, message):
     """处理单条 JSON-RPC 消息，返回响应 dict；通知返回 None。"""
     identity, method = message.get("id"), message.get("method")
@@ -84,7 +106,7 @@ async def handle(gateway, client, message):
             if params.get("cursor") is not None:
                 return {"jsonrpc": "2.0", "id": identity, "error": {"code": -32602, "message": "Invalid cursor"}}
             if client is None:
-                value = {"tools": []}
+                value = preview_tools(gateway)
             else:
                 value = await gateway.tools_list(client)
         elif method == "tools/call":

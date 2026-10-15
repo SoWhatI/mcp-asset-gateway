@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 目录预览：自举 stdio 模式在未配置客户端令牌时返回各内置资产类型的静态工具目录（名称带 `类型__工具` 前缀、描述标注「目录预览」；k8s 呈现未锁定命名空间形态、Redis 呈现只读形态，不含任何账号数据与凭据），目录站（Glama 等）可据此完成工具定义质量评估，直连客户端也能先见目录再接授权组；工具调用仍被拒绝，需部署实例授权组放行。
 - 容器入口自动分流：配置了 `GATEWAY_MASTER_KEY`（compose `env_file`）仍启动 HTTP 服务；未配置时进入自举 stdio 模式（`app/stdio_server.py`），以一次性密钥与临时数据库响应 MCP `initialize`/`tools/list`/`tools/call`——目录检查（Glama 等）可直接通过，也支持将网关作为本地 stdio 服务器接入 AI 客户端（`GATEWAY_CLIENT_TOKEN` 指定客户端令牌）。
 - 健康检查区分运行模式（`app/healthcheck.py`）：stdio 自举模式视为健康，不再误报 unhealthy。
 
