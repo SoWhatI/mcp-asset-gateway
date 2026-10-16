@@ -135,7 +135,7 @@ async def loop():
             client = None
             print(
                 "stdio: 自举模式（未配置主密钥，使用一次性密钥与临时数据库）；"
-                f"返回 {len(preview_tools(gateway)["tools"])} 个内置类型目录预览工具，工具调用不可用。"
+                f'返回 {len(preview_tools(gateway)["tools"])} 个内置类型目录预览工具，工具调用不可用。'
                 "部署请通过 compose 提供 GATEWAY_MASTER_KEY。",
                 file=sys.stderr,
             )
