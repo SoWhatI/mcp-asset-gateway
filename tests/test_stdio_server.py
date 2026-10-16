@@ -45,20 +45,29 @@ def clean_env(**extra):
     return env
 
 
-def test_bootstrap_mode_lists_no_tools_and_rejects_calls(tmp_path):
+def test_bootstrap_mode_lists_preview_catalog_and_rejects_calls():
     code, responses, _ = talk(
         clean_env(),
         [
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}},
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
-            {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "x", "arguments": {}}},
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "mysql__list_tables", "arguments": {}},
+            },
         ],
     )
     assert code == 0
     init, tools, call = responses
     assert init["result"]["serverInfo"]["name"] == "mcp-asset-gateway"
     assert init["result"]["protocolVersion"] == "2025-06-18"
-    assert tools["result"] == {"tools": []}
+    # 目录预览：各内置类型的静态工具形态，名称带类型前缀，描述标注预览，不含账号数据。
+    catalog = tools["result"]["tools"]
+    assert any(t["name"] == "mysql__list_tables" for t in catalog)
+    assert all("__" in t["name"] and "目录预览" in t["description"] for t in catalog)
+    assert all("inputSchema" in t for t in catalog)
     assert call["error"]["code"] == -32000
     assert "UNAUTHORIZED" in call["error"]["message"]
 
@@ -116,7 +125,8 @@ def test_master_key_mode_uses_env_database(tmp_path):
     assert responses[0]["result"]["serverInfo"]["name"] == "mcp-asset-gateway"
     # 走常规配置分支：库建在 DATABASE_PATH 而非临时目录。
     assert database.exists()
-    assert responses[1]["result"] == {"tools": []}
+    # 常规配置分支未配置客户端令牌时同样返回目录预览。
+    assert responses[1]["result"]["tools"]
 
 
 def test_invalid_client_token_fails_fast(tmp_path):
