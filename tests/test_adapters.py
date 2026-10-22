@@ -460,9 +460,7 @@ def test_mysql_query_error_mapping():
     assert missing.code == "MYSQL_QUERY_FAILED"
     assert "1146" in missing.message
     denied = query_error(
-        pymysql.err.ProgrammingError(
-            1142, "SELECT command denied to user 'u'@'h' for table 'antsport_payment_order'"
-        )
+        pymysql.err.ProgrammingError(1142, "SELECT command denied to user 'u'@'h' for table 'antsport_payment_order'")
     )
     assert denied.code == "MYSQL_QUERY_FAILED"
     assert "1142" in denied.message and "1146" in denied.message and "list_tables" in denied.message
@@ -922,9 +920,7 @@ def test_k8s_catalog_unlocked_adds_namespace_parameter():
     schemas = {spec["name"]: spec["inputSchema"] for spec in unlocked}
     assert set(schemas) == {"k8s_list_resources", "k8s_get_resource", "k8s_pod_logs", "k8s_exec", "k8s_apply"}
     # k8s_apply 的目标命名空间在 manifest 内声明，不注入 namespace 参数。
-    assert all(
-        "namespace" in schema["properties"] for name, schema in schemas.items() if name != "k8s_apply"
-    )
+    assert all("namespace" in schema["properties"] for name, schema in schemas.items() if name != "k8s_apply")
     # 列表留空=全部命名空间；读资源与日志必须指定。
     assert "namespace" not in schemas["k8s_list_resources"]["required"]
     assert "namespace" in schemas["k8s_get_resource"]["required"]
@@ -1315,9 +1311,7 @@ def test_k8s_catalog_includes_apply_tool():
     unlocked = {spec["name"]: spec for spec in kind.catalog({"config": {}, "policy": {}})}
     assert "namespace" not in unlocked["k8s_apply"]["inputSchema"]["properties"]
     assert all(
-        "namespace" in spec["inputSchema"]["properties"]
-        for name, spec in unlocked.items()
-        if name != "k8s_apply"
+        "namespace" in spec["inputSchema"]["properties"] for name, spec in unlocked.items() if name != "k8s_apply"
     )
     # Secret 仍不进入只读资源类型表，只属于 apply 白名单。
     assert "secrets" not in kubernetes.KINDS and "Secret" in kubernetes.APPLY_KINDS
@@ -1441,4 +1435,3 @@ async def test_k8s_apply_partial_failure_reports_progress(config, monkeypatch):
     with pytest.raises(GatewayError) as exc:
         await kind.execute("k8s_apply", {"manifest": manifest}, ctx, None)
     assert exc.value.code == "K8S_FORBIDDEN" and "之前 1 个已生效" in exc.value.message
-

@@ -1,12 +1,28 @@
 import asyncio
 import copy
+import hashlib
 import json
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from app.core.security import GatewayError, validate
+
+
+def tool_hash(spec):
+    approved = {k: spec.get(k) for k in ("name", "description", "inputSchema", "outputSchema", "annotations")}
+    return hashlib.sha256(json.dumps(approved, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def public_name(account, upstream):
+    prefix = account + "__"
+    if re.fullmatch(r"[A-Za-z0-9_-]+", upstream) and len(prefix + upstream) <= 64:
+        return prefix + upstream
+    suffix = "_" + hashlib.sha256(upstream.encode()).hexdigest()[:12]
+    clean = re.sub(r"[^A-Za-z0-9_-]", "_", upstream)
+    return prefix + clean[: 64 - len(prefix) - len(suffix)] + suffix
 
 
 def obj(properties, required=()):
@@ -146,6 +162,14 @@ class AssetType:
     async_mode = False
     # True 表示工具目录来自上游（工具名需加前缀、刷新与版本校验走 mcp 目录语义）。
     proxied = False
+    # True 表示工具名按账号加前缀发布（多账号同名工具天然隔离，不注入 target 参数）。
+    account_scoped_names = False
+    # True 表示工具 inputSchema 随账号策略变化（多账号同名工具需在目录层合并参数）。
+    per_account_schema = False
+    # False 表示类型暂不可用（如插件缺失），控制台据此展示占位状态并禁止新建资产。
+    available = True
+    # True 表示这是插件缺失时兜底注册的占位实现，可被插件启用替换。
+    placeholder = False
     connection_schema = obj({})
     account_schema = obj({})
     credential_schema = obj({})
@@ -158,7 +182,7 @@ class AssetType:
             "display_name": self.display_name,
             "icon": self.icon,
             "default_port": self.default_port,
-            "available": True,
+            "available": self.available,
             "connection_schema": self.connection_schema,
             "account_schema": self.account_schema,
             "credential_schema": self.credential_schema,

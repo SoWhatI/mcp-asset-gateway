@@ -1,7 +1,4 @@
 import asyncio
-import hashlib
-import json
-import re
 from contextlib import AsyncExitStack, asynccontextmanager
 
 import httpx
@@ -9,30 +6,19 @@ from mcp import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
 
-from app.asset_types.base import AssetType, obj, text
+from app.asset_types.base import AssetType, obj, public_name, text, tool_hash
 from app.asset_types.pinned import PinnedTransport
 from app.core.db import dumps
 from app.core.security import GatewayError, check_schema, validate
 
-
-def tool_hash(spec):
-    approved = {k: spec.get(k) for k in ("name", "description", "inputSchema", "outputSchema", "annotations")}
-    return hashlib.sha256(json.dumps(approved, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-
-
-def public_name(account, upstream):
-    prefix = account + "__"
-    if re.fullmatch(r"[A-Za-z0-9_-]+", upstream) and len(prefix + upstream) <= 64:
-        return prefix + upstream
-    suffix = "_" + hashlib.sha256(upstream.encode()).hexdigest()[:12]
-    clean = re.sub(r"[^A-Za-z0-9_-]", "_", upstream)
-    return prefix + clean[: 64 - len(prefix) - len(suffix)] + suffix
+__all__ = ["MCPProxyAssetType", "public_name", "tool_hash"]
 
 
 class MCPProxyAssetType(AssetType):
     type_id, display_name, icon = "mcp", "上游 MCP 服务", "Connection"
     async_mode = True
     proxied = True
+    account_scoped_names = True
     connection_schema = obj(
         {
             "url": text("MCP URL", minLength=1),

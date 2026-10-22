@@ -275,6 +275,8 @@ def clip(value, ctx, depth=0):
 class KubernetesAssetType(AssetType):
     type_id, display_name, icon = "kubernetes", "Kubernetes 集群", "Platform"
     async_mode = True
+    # 命名空间锁定策略会让同名工具的 inputSchema 随账号变化，目录层需合并参数展示。
+    per_account_schema = True
     connection_schema = obj(
         {
             "url": text("API Server 地址", pattern=r"^https://\S{1,1024}$", minLength=10),
@@ -486,9 +488,7 @@ class KubernetesAssetType(AssetType):
                 trust_env=False,
                 timeout=timeout,
             ) as client:
-                response = await client.request(
-                    method, cfg["url"].rstrip("/") + path, params=params, content=content
-                )
+                response = await client.request(method, cfg["url"].rstrip("/") + path, params=params, content=content)
         ctx.remaining()
         if response.status_code >= 400:
             raise response_error(response)

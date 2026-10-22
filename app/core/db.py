@@ -25,7 +25,8 @@ def decode(row):
     result = dict(row)
     for key in list(result):
         if key.endswith("_json"):
-            result[key[:-5]] = json.loads(result.pop(key))
+            value = result.pop(key)
+            result[key[:-5]] = json.loads(value) if value is not None else None
     return result
 
 

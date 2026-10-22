@@ -13,11 +13,14 @@ services:
       - .env
     environment:
       DATABASE_PATH: /app/data/gateway.db
+      # 插件安装目录指向独立可写卷：安装、升级与回滚都不触碰只读根文件系统。
+      PLUGINS_DIR: /app/plugins
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${GATEWAY_PORT:-8303}:8303"
     volumes:
       - gateway-data:/app/data
       - gateway-backups:/app/backups
+      - gateway-plugins:/app/plugins
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m
     pids_limit: 128
@@ -33,3 +36,4 @@ services:
 volumes:
   gateway-data:
   gateway-backups:
+  gateway-plugins:

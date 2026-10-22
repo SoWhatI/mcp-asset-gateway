@@ -316,7 +316,7 @@ def test_migrations_lock_and_restart(config):
             audit(conn, "tools.call", source="mcp", status="started", request_id="interrupted-call")
         store.migrate()
         with store.connect() as conn:
-            assert conn.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 8
+            assert conn.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 9
             assert (
                 conn.execute("SELECT status FROM audit_log WHERE request_id='interrupted-call'").fetchone()[0]
                 == "interrupted"
@@ -417,8 +417,12 @@ def test_asset_type_migration_allows_new_kinds(tmp_path):
         conn.commit()
     store.migrate()
     with store.connect() as conn:
-        assert conn.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 8
+        assert conn.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 9
         assert not conn.execute("PRAGMA foreign_key_check").fetchall()
+        # 009：内置类型种子登记；assets.type 由 CHECK 枚举改为登记表外键。
+        seeded = {r[0] for r in conn.execute("SELECT type_id FROM asset_types WHERE source='builtin'")}
+        assert seeded == {"mysql", "ssh", "filebrowser", "mcp", "redis", "kubernetes", "gitrepo", "jenkins"}
+        assert "code_versions_json" in {r[1] for r in conn.execute("PRAGMA table_info(grants)")}
     with store.connect(write=True) as conn:
         # 005/006 重建 assets 后，accounts.asset_id 的外键仍指向重建后的表。
         with pytest.raises(sqlite3.IntegrityError):

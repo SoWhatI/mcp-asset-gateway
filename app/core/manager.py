@@ -293,7 +293,17 @@ class Manager:
             "assets": {"id", "name", "type", "connection", "enabled", "revision"},
             "accounts": {"id", "name", "asset_id", "config", "credential", "policy", "note", "enabled", "revision"},
             "clients": {"id", "name", "token_expires_at", "enabled", "revision"},
-            "grants": {"name", "client_ids", "entries", "account_ids", "tools", "tool_versions", "enabled", "revision"},
+            "grants": {
+                "name",
+                "client_ids",
+                "entries",
+                "account_ids",
+                "tools",
+                "tool_versions",
+                "code_versions",
+                "enabled",
+                "revision",
+            },
         }[table]
         if set(body) - allowed:
             raise GatewayError("VALIDATION", "包含不支持的字段")
@@ -432,40 +442,56 @@ class Manager:
                 metadata_only = old is not None and set(body) <= {"revision", "name"}
                 revoking = revoking or metadata_only
                 versions = old["tool_versions"] if revoking else {}
+                # 插件工具授权绑定制品哈希：工具名未变而代码已变时，旧授权不能自动沿用。
+                code = old["code_versions"] if revoking else {}
                 if any(entry["tools"] for entry in entries) and not revoking:
                     for entry in entries:
                         if not entry["tools"]:
                             continue
                         account = accounts[entry["account_id"]]
                         asset = fetch(conn, "assets", account["asset_id"])
-                        specs = self.registry[asset["type"]].catalog(account)
+                        kind = self.registry[asset["type"]]
+                        specs = kind.catalog(account)
                         catalog = {item["name"]: item for item in specs}
                         if set(entry["tools"]) - set(catalog):
                             raise GatewayError(
                                 "TOOL_INVALID", f"部分工具不在账号 {account['name']} 的目录中，请重新选择或刷新目录"
                             )
                         validate_rules(entry["parameter_rules"], entry["tools"], catalog)
-                        if asset["type"] != "mcp":
+                        if getattr(kind, "plugin_id", None):
+                            code[asset["type"]] = getattr(kind, "artifact_hash", None)
+                        # 目录语义按能力位判定：动态目录类型才做新鲜度与版本绑定。
+                        if not kind.proxied:
                             continue
                         if not account["catalog_refreshed_at"] or now() - account["catalog_refreshed_at"] > 300000:
                             raise GatewayError("CATALOG_STALE", f"请先刷新上游工具目录（{account['name']}）")
                         versions[entry["account_id"]] = {name: catalog[name]["spec_hash"] for name in entry["tools"]}
                     submitted = body.get("tool_versions", {})
+                    submitted_code = body.get("code_versions", {})
                     if not isinstance(submitted, dict) or any(
                         not isinstance(hashes, dict) for hashes in submitted.values()
                     ):
                         raise GatewayError("VALIDATION", "工具版本确认信息格式不正确，请重新打开授权组")
+                    if not isinstance(submitted_code, dict) or any(
+                        not isinstance(value, (str, type(None))) for value in submitted_code.values()
+                    ):
+                        raise GatewayError("VALIDATION", "插件代码版本确认信息格式不正确，请重新打开授权组")
                     if old and "tool_versions" not in body:
                         submitted = {
                             account_id: {name: hashes.get(name) for name in expected}
                             for account_id, expected in versions.items()
                             for hashes in [old["tool_versions"].get(account_id, {})]
                         }
+                    if old and "code_versions" not in body:
+                        submitted_code = {type_id: old["code_versions"].get(type_id) for type_id in code}
                     if versions != submitted:
                         raise GatewayError("CATALOG_CHANGED", "工具定义已变更，请查看后重新确认", 409)
+                    if code != submitted_code:
+                        raise GatewayError("CODE_CHANGED", "插件代码已升级，请确认变更后重新保存授权", 409)
                 record.update(
                     tools_json=dumps(sorted({tool for entry in entries for tool in entry["tools"]})),
                     tool_versions_json=dumps(versions),
+                    code_versions_json=dumps(code),
                 )
             if old:
                 record.pop("id")

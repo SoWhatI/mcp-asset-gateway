@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   ArrowRight,
+  Box,
   Coin,
   Connection,
   DataAnalysis,
@@ -25,6 +26,7 @@ import {
   VideoPlay,
 } from "@element-plus/icons-vue";
 import { api, all, catalogNeedsRefresh, defaults, displayText, displayValue, groupsFor, groupTools, grantEntryPayload, matchesAccount, matchesGrant, trimStrings } from "./api";
+import PluginCenter from "./PluginCenter.vue";
 import SchemaForm from "./SchemaForm.vue";
 import ToolRules from "./ToolRules.vue";
 
@@ -66,6 +68,12 @@ const menu = [
     icon: Tickets,
   },
   {
+    id: "plugins",
+    name: "插件中心",
+    caption: "安装可信插件扩展资产类型，无需重建网关",
+    icon: Box,
+  },
+  {
     id: "debug",
     name: "工具调试台",
     caption: "使用真实授权链路，验证工具行为",
@@ -88,6 +96,8 @@ const kindIcons = {
   gitrepo: Document,
   jenkins: VideoPlay,
 };
+// 插件类型可携带的图标允许清单（与后端 manifest 校验一致）。
+const pluginIcons = { Box, Coin, Monitor, FolderOpened, DataLine, Platform, Document, VideoPlay, Connection };
 const kindColors = {
   mysql: "blue",
   ssh: "violet",
@@ -98,7 +108,20 @@ const kindColors = {
   gitrepo: "orange",
   jenkins: "red",
 };
-const kindNames = { filebrowser: "SFTP", kubernetes: "K8S", gitrepo: "Git", jenkins: "Jenkins" };
+const fallbackColors = ["blue", "violet", "amber", "green", "cyan", "orange"];
+function iconFor(type) {
+  if (kindIcons[type.type_id]) return kindIcons[type.type_id];
+  const declared = type.icon && pluginIcons[type.icon];
+  return declared || Box;
+}
+function colorFor(typeId) {
+  if (kindColors[typeId]) return kindColors[typeId];
+  // 未登记类型按名称生成稳定回退色，保证插件类型始终有辨识度。
+  let sum = 0;
+  for (const char of typeId) sum = (sum * 31 + char.charCodeAt(0)) % 997;
+  return fallbackColors[sum % fallbackColors.length];
+}
+const kindNames = { filebrowser: "SFTP", kubernetes: "K8s", gitrepo: "Git", jenkins: "Jenkins" };
 const kindLabel = (kind) => kindNames[kind] || kind.toUpperCase();
 const active = ref("dashboard");
 const user = ref(null),
@@ -333,11 +356,14 @@ async function navigate(id) {
     else await refreshBase();
   });
 }
+async function refreshTypes() {
+  types.value = await api("/types");
+}
 async function login() {
   await run(async () => {
     user.value = await api("/auth/login", { method: "POST", body: loginForm });
     loginForm.password = "";
-    types.value = await api("/types");
+    await refreshTypes();
     await refreshBase();
   });
 }
@@ -426,14 +452,18 @@ async function openEdit(row = null, table = active.value) {
   catalogStale.value = false;
   replaceCredential.value = false;
   credential.value = {};
+  if (table === "assets" && !row) {
+    // 打开新建对话框时重新拉取类型列表：插件启停后可用类型会变化。
+    await run(refreshTypes);
+  }
   const data = row
     ? JSON.parse(JSON.stringify(row))
     : { name: "", enabled: true };
   if (table === "assets" && !row) {
-    data.type = "mysql";
-    data.connection = defaults(
-      types.value.find((t) => t.type_id === "mysql")?.connection_schema,
-    );
+    // 新资产默认取第一个可用类型（插件类型可用时同样可直接创建）。
+    const first = types.value.find((t) => t.available !== false);
+    data.type = first?.type_id || "mysql";
+    data.connection = defaults(first?.connection_schema);
   }
   if (table === "accounts" && !row) {
     data.asset_id = "";
@@ -497,6 +527,8 @@ async function save() {
       )
         throw new Error("请加载工具目录并移除已不可用的工具后再保存");
       payload.tool_versions = {};
+      payload.code_versions = {};
+      const pluginCodeChanged = [];
       for (const item of grantCatalog.value) {
         const entry = payload.entries.find((row) => row.account_id === item.accountId);
         if (entry?.tools.includes(item.name) && item.spec_hash) {
@@ -504,10 +536,28 @@ async function save() {
           payload.tool_versions[item.accountId][item.name] = item.spec_hash;
         }
       }
+      // 插件工具授权绑定代码版本：提交当前制品哈希；与已批准值不同时需要二次确认。
+      for (const entry of payload.entries) {
+        if (!entry.tools.length) continue;
+        const account = entities.accounts.find((row) => row.id === entry.account_id);
+        const asset = entities.assets.find((row) => row.id === account?.asset_id);
+        const type = types.value.find((row) => row.type_id === asset?.type);
+        if (type?.plugin?.artifact_hash) {
+          payload.code_versions[asset.type] = type.plugin.artifact_hash;
+          if (original.value && original.value.code_versions?.[asset.type] !== type.plugin.artifact_hash)
+            pluginCodeChanged.push(asset.type);
+        }
+      }
       if (Object.keys(payload.tool_versions).length)
         await ElMessageBox.confirm(
           "确认已查看选中工具的描述与 schema，并批准当前定义版本？上游工具可能有外部副作用。",
           "确认工具版本",
+          { type: "warning" },
+        );
+      if (pluginCodeChanged.length)
+        await ElMessageBox.confirm(
+          `插件代码已变化：${pluginCodeChanged.join("、")}。旧授权不会自动沿用，请确认已了解插件升级带来的行为变化。`,
+          "确认插件代码版本",
           { type: "warning" },
         );
     }
@@ -732,6 +782,15 @@ function editClosed() {
 }
 const entryCatalog = (entry) =>
   entry ? grantCatalog.value.filter((tool) => tool.accountId === entry.account_id) : [];
+// 该账号所属插件类型的当前代码版本与已批准值不一致时返回类型名，用于提示重新确认。
+function pluginCodeOutdated(entry) {
+  if (!entry || !original.value) return "";
+  const account = entities.accounts.find((row) => row.id === entry.account_id);
+  const asset = entities.assets.find((row) => row.id === account?.asset_id);
+  const type = types.value.find((row) => row.type_id === asset?.type);
+  if (!type?.plugin?.artifact_hash) return "";
+  return original.value.code_versions?.[asset.type] !== type.plugin.artifact_hash ? asset.type : "";
+}
 async function openGrantCell(client, account) {
   cellClient.value = client;
   cellAccount.value = account;
@@ -756,7 +815,7 @@ onMounted(async () => {
   window.addEventListener("session-expired", expired);
   try {
     user.value = await api("/auth/me");
-    types.value = await api("/types");
+    await refreshTypes();
     await refreshBase();
   } catch {
     user.value = null;
@@ -995,13 +1054,14 @@ onUnmounted(() => window.removeEventListener("session-expired", expired));
                   v-for="type in types"
                   :key="type.type_id"
                   class="type-tile"
+                  :class="{ 'type-unavailable': type.available === false }"
                   @click="
                     navigate('assets');
                     kindFilter = type.type_id;
                   "
                 >
-                  <span :class="['type-icon', kindColors[type.type_id]]"
-                    ><component :is="kindIcons[type.type_id]" /></span
+                  <span :class="['type-icon', colorFor(type.type_id)]"
+                    ><component :is="iconFor(type)" /></span
                   ><strong>{{ type.display_name }}</strong
                   ><span
                     >{{
@@ -1009,7 +1069,8 @@ onUnmounted(() => window.removeEventListener("session-expired", expired));
                         .length
                     }}
                     个资产</span
-                  ><el-icon><ArrowRight /></el-icon>
+                  ><el-tag v-if="type.plugin_missing" size="small" type="danger">插件缺失</el-tag>
+                  <el-icon><ArrowRight /></el-icon>
                 </button>
               </div>
             </section>
@@ -1222,8 +1283,8 @@ onUnmounted(() => window.removeEventListener("session-expired", expired));
                 ><div class="name-cell">
                   <span
                     v-if="active === 'assets'"
-                    :class="['type-icon small', kindColors[row.type]]"
-                    ><component :is="kindIcons[row.type]"
+                    :class="['type-icon small', colorFor(row.type)]"
+                    ><component :is="iconFor(types.find((t) => t.type_id === row.type) || { type_id: row.type })"
                   /></span>
                   <div>
                     <strong>{{ row.name }}</strong>
@@ -1685,6 +1746,7 @@ onUnmounted(() => window.removeEventListener("session-expired", expired));
             </div>
           </div></template
         >
+        <PluginCenter v-else-if="active === 'plugins'" />
         <footer class="page-footer">
           <span>MCP Asset Gateway <span class="muted">/</span> v0.1.0</span
           ><span>统一连接 · 精确授权 · 可追溯访问</span>
@@ -1713,8 +1775,9 @@ onUnmounted(() => window.removeEventListener("session-expired", expired));
             ><el-option
               v-for="type in types"
               :key="type.type_id"
-              :label="type.display_name"
-              :value="type.type_id" /></el-select></el-form-item
+              :label="type.display_name + (type.plugin_missing ? '（插件缺失）' : '')"
+              :value="type.type_id"
+              :disabled="type.available === false" /></el-select></el-form-item
         ><el-alert
           title="连接参数中不要填入密码；目标地址需可由本网关正常访问。"
           type="info"
@@ -1980,6 +2043,12 @@ onUnmounted(() => window.removeEventListener("session-expired", expired));
       <el-alert
         v-if="catalogStale"
         title="上游目录已过期。请先刷新并确认工具定义后再授权。"
+        type="warning"
+        :closable="false"
+      />
+      <el-alert
+        v-if="pluginCodeOutdated(toolEntry)"
+        :title="`插件代码已升级（${pluginCodeOutdated(toolEntry)}）：工具名未变但执行代码已变化，保存即表示批准当前插件版本。`"
         type="warning"
         :closable="false"
       />

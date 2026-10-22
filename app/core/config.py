@@ -34,11 +34,19 @@ class Config:
     outbound: tuple[dict, ...]
     legacy: bool = False
     ssh_host_key_enforce: bool = False
+    plugins_dir: str = ""
+    plugin_market_url: str = ""
+    plugin_market_key: str = ""
 
     @property
     def outbound_enforce(self):
         """登记列表非空时启用强制登记校验；null/空列表表示不开启。"""
         return bool(self.outbound)
+
+    @property
+    def plugin_market(self):
+        """插件市场来源：URL（http(s):// 或 file://）与 ed25519 公钥都配置才算可用。"""
+        return bool(self.plugin_market_url) and bool(self.plugin_market_key)
 
     @classmethod
     def from_env(cls):
@@ -97,8 +105,16 @@ class Config:
             outbound=tuple(outbound),
             legacy=os.getenv("LEGACY_COMPAT", "false").lower() == "true",
             ssh_host_key_enforce=os.getenv("SSH_HOST_KEY_ENFORCE", "false").lower() == "true",
+            plugins_dir=os.getenv("PLUGINS_DIR", ""),
+            plugin_market_url=os.getenv("PLUGIN_MARKET_URL", ""),
+            plugin_market_key=os.getenv("PLUGIN_MARKET_PUBLIC_KEY", ""),
         )
 
     @property
     def data_dir(self):
         return Path(self.database).resolve().parent
+
+    @property
+    def plugins_root(self):
+        """插件安装根目录；默认与数据目录同级，容器内通过 PLUGINS_DIR 指向独立卷。"""
+        return Path(self.plugins_dir) if self.plugins_dir else self.data_dir / "plugins"

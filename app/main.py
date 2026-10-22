@@ -18,6 +18,7 @@ from app.core.db import decode, now
 from app.core.gateway import Gateway
 from app.core.manager import TABLES, audit
 from app.core.security import GatewayError, depth, equal
+from app.plugins.market import market_view
 
 VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
@@ -333,6 +334,100 @@ def create_app(config=None):
             return ok(request, await gateway.call(client, payload.get("name"), payload.get("arguments", {}), actor))
         raise GatewayError("NOT_FOUND", "调试操作不存在", 404)
 
+    # ---- 插件中心（注册在通用 CRUD 路由之前） ----
+
+    @app.get("/api/plugins/market")
+    async def plugin_market(request: Request, query: str = ""):
+        await admin(request)
+        return ok(request, {"items": market_view(gateway.plugins.market.index(), query)})
+
+    @app.get("/api/plugins/market/{plugin_id}")
+    async def plugin_market_detail(plugin_id: str, request: Request):
+        await admin(request)
+        found = next((item for item in market_view(gateway.plugins.market.index()) if item["id"] == plugin_id), None)
+        if not found:
+            raise GatewayError("NOT_FOUND", "市场不存在该插件", 404)
+        return ok(request, found)
+
+    @app.post("/api/plugins/install")
+    async def plugin_install(request: Request):
+        actor = await admin(request)
+        gateway.rate.check("plugins:" + actor["id"], 20)
+        payload = await body(request)
+        action = payload.get("action", "install")
+        if action not in ("install", "upgrade"):
+            raise GatewayError("VALIDATION", "action 只支持 install/upgrade")
+        job = await gateway.plugins.install(
+            payload.get("plugin_id"),
+            payload.get("version"),
+            actor,
+            confirm_hash=payload.get("confirm_hash"),
+            action=action,
+        )
+        return ok(request, job)
+
+    @app.get("/api/plugins/jobs")
+    async def plugin_jobs(request: Request, limit: int = 50):
+        await admin(request)
+        return ok(request, {"items": gateway.plugins.jobs_listing(limit)})
+
+    @app.get("/api/plugins/jobs/{identity}")
+    async def plugin_job(identity: str, request: Request):
+        await admin(request)
+        return ok(request, gateway.plugins.job(identity))
+
+    @app.get("/api/plugins")
+    async def plugins_list(request: Request):
+        await admin(request)
+        return ok(request, {"items": gateway.plugins.listing()})
+
+    @app.get("/api/plugins/{identity}")
+    async def plugin_detail(identity: str, request: Request):
+        await admin(request)
+        return ok(request, gateway.plugins.detail(identity))
+
+    @app.get("/api/plugins/{identity}/runtime")
+    async def plugin_runtime(identity: str, request: Request):
+        await admin(request)
+        return ok(request, gateway.plugins.runtime(identity))
+
+    @app.post("/api/plugins/{identity}/enable")
+    async def plugin_enable(identity: str, request: Request):
+        actor = await admin(request)
+        gateway.rate.check("plugins:" + actor["id"], 20)
+        return ok(request, await gateway.plugins.enable(identity, actor))
+
+    @app.post("/api/plugins/{identity}/disable")
+    async def plugin_disable(identity: str, request: Request):
+        actor = await admin(request)
+        return ok(request, await gateway.plugins.disable(identity, actor))
+
+    @app.post("/api/plugins/{identity}/upgrade")
+    async def plugin_upgrade(identity: str, request: Request):
+        actor = await admin(request)
+        gateway.rate.check("plugins:" + actor["id"], 20)
+        payload = await body(request)
+        job = await gateway.plugins.install(
+            identity,
+            payload.get("version"),
+            actor,
+            confirm_hash=payload.get("confirm_hash"),
+            action="upgrade",
+        )
+        return ok(request, job)
+
+    @app.post("/api/plugins/{identity}/rollback")
+    async def plugin_rollback(identity: str, request: Request):
+        actor = await admin(request)
+        gateway.rate.check("plugins:" + actor["id"], 20)
+        payload = await body(request)
+        return ok(request, await gateway.plugins.switch(identity, payload.get("version"), actor))
+
+    @app.post("/api/plugins/{identity}/uninstall")
+    async def plugin_uninstall(identity: str, request: Request):
+        actor = await admin(request)
+        return ok(request, await gateway.plugins.uninstall(identity, actor))
+
     @app.api_route("/api/{table}", methods=["GET", "POST"])
     async def collections(table: str, request: Request, limit: int = 20, offset: int = 0):
         actor = await admin(request)
@@ -340,7 +435,7 @@ def create_app(config=None):
             raise GatewayError("NOT_FOUND", "接口不存在", 404)
         if request.method == "GET":
             return ok(request, await gateway.db(manager.list, table, limit, offset))
-        return ok(request, await gateway.db(manager.save, table, await body(request), actor))
+        return ok(request, await gateway.upsert(table, await body(request), actor))
 
     @app.api_route("/api/{table}/{identity}", methods=["GET", "PATCH", "DELETE"])
     async def record(table: str, identity: str, request: Request, revision: int = 0):
@@ -351,7 +446,7 @@ def create_app(config=None):
             return ok(request, await gateway.db(manager.get, table, identity))
         if request.method == "DELETE":
             return ok(request, await gateway.db(manager.delete, table, identity, revision, actor))
-        return ok(request, await gateway.db(manager.save, table, await body(request), actor, identity))
+        return ok(request, await gateway.upsert(table, await body(request), actor, identity))
 
     @app.get("/mcp")
     async def mcp_get():

@@ -806,12 +806,15 @@ def test_migration_008_preserves_all_rows_and_foreign_keys(tmp_path):
         )
         conn.commit()
         before = {
-            table: conn.execute("SELECT * FROM " + table).fetchall()
+            table: [tuple(row) for row in conn.execute("SELECT * FROM " + table)]
             for table in ("assets", "accounts", "grants", "grant_accounts")
         }
+        widths = {table: len(rows[0]) for table, rows in before.items()}
     store.migrate()
     with store.connect() as conn:
         assert not conn.execute("PRAGMA foreign_key_check").fetchall()
-        assert conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0] == 8
+        assert conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0] == 9
         for table, expected in before.items():
-            assert [tuple(r) for r in conn.execute("SELECT * FROM " + table)] == expected
+            # 009 为 grants 追加 code_versions_json 默认列，既有列必须原样保留。
+            assert [tuple(row[: widths[table]]) for row in conn.execute("SELECT * FROM " + table)] == expected
+        assert json.loads(conn.execute("SELECT code_versions_json FROM grants WHERE id='grant'").fetchone()[0]) == {}

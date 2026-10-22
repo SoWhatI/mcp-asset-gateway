@@ -1559,3 +1559,90 @@ main {
     grid-template-columns: 1fr;
   }
 }
+
+/* ---- 插件中心 ---- */
+.plugin-center {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.plugin-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.plugin-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 14px;
+}
+.plugin-card {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.plugin-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+.plugin-publisher {
+  color: var(--muted, #8a8f9d);
+  font-size: 12px;
+}
+.plugin-desc {
+  margin: 0;
+  min-height: 36px;
+  line-height: 1.6;
+}
+.plugin-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.plugin-version-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px dashed rgba(148, 163, 184, 0.25);
+  padding-top: 8px;
+}
+.plugin-version-meta {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+.plugin-version-meta .muted {
+  font-size: 12px;
+}
+.plugin-stats {
+  margin: 8px 0;
+  padding-left: 18px;
+  line-height: 1.9;
+}
+.plugin-recent {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.plugin-error-row {
+  font-size: 12px;
+  color: #d0d4dd;
+  background: rgba(148, 163, 184, 0.12);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+.plugin-error {
+  color: #f89898;
+  font-size: 12px;
+}
+.type-tile.type-unavailable {
+  opacity: 0.55;
+}

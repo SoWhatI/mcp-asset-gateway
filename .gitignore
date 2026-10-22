@@ -36,3 +36,9 @@ test-results/
 dist/
 *.egg-info/
 运维文档/
+# 插件构建与安装产物（示例插件源码本身入库）
+examples/plugins/*/wheelhouse/
+examples/plugins/*/build/
+/plugins/
+plugin-market/
+.zcode/

@@ -7,20 +7,25 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
-from app.asset_types.base import BlockingRunner, Context, failed
+from app.asset_types.base import BlockingRunner, Context, failed, public_name
 from app.asset_types.filebrowser import SFTPAssetType
 from app.asset_types.gitrepo import GitRepoAssetType
 from app.asset_types.jenkins import JenkinsAssetType
 from app.asset_types.kubernetes import KubernetesAssetType
-from app.asset_types.mcp import MCPProxyAssetType, public_name
+from app.asset_types.mcp import MCPProxyAssetType
 from app.asset_types.mysql import MySQLAssetType
+from app.asset_types.placeholder import PlaceholderAssetType
 from app.asset_types.redis import RedisAssetType
 from app.asset_types.ssh import SSHAssetType
 from app.core.config import DEFAULTS
 from app.core.db import Store, decode, dumps, now
 from app.core.manager import Manager, audit, fetch
+from app.core.registry import TypeRegistry
 from app.core.security import GatewayError, NetworkPolicy, RateLimit, Vault, digest, equal, validate
 from app.core.tool_rules import enforce_rules
+from app.plugins.bridge import PluginAssetType
+from app.plugins.market import MarketClient, load_public_key
+from app.plugins.service import PluginService
 
 logger = logging.getLogger("gateway")
 
@@ -31,20 +36,33 @@ class Gateway:
         self.store = Store(config.database)
         self.vault = Vault(config.master_key, config.key_id)
         self.network = NetworkPolicy(config)
-        self.types = {
-            t.type_id: t
-            for t in (
-                MySQLAssetType(),
-                SSHAssetType(config.ssh_host_key_enforce),
-                SFTPAssetType(config.ssh_host_key_enforce),
-                MCPProxyAssetType(),
-                RedisAssetType(),
-                KubernetesAssetType(),
-                GitRepoAssetType(config.data_dir, config.ssh_host_key_enforce),
-                JenkinsAssetType(config.master_key),
-            )
-        }
+        self.registry = TypeRegistry()
+        for kind in (
+            MySQLAssetType(),
+            SSHAssetType(config.ssh_host_key_enforce),
+            SFTPAssetType(config.ssh_host_key_enforce),
+            MCPProxyAssetType(),
+            RedisAssetType(),
+            KubernetesAssetType(),
+            GitRepoAssetType(config.data_dir, config.ssh_host_key_enforce),
+            JenkinsAssetType(config.master_key),
+        ):
+            self.registry.register(kind)
+        # 兼容既有调用点：types 与 registry 是同一对象，均为映射式访问。
+        self.types = self.registry
         self.manager = Manager(self.store, self.vault, self.types, self.network)
+        self.plugins = PluginService(
+            store=self.store,
+            registry=self.registry,
+            db=None,  # start() 前注入：db 依赖事件循环内的执行器
+            plugins_root=config.plugins_root,
+            market=MarketClient(config.plugin_market_url, load_public_key(config.plugin_market_key)),
+            network_rules=lambda: {
+                "allowlist": [dict(item) for item in config.outbound],
+                "enforce": config.outbound_enforce,
+            },
+            vault=self.vault,
+        )
         self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="database")
         self.db_slots = asyncio.Semaphore(64)
         self.runner = BlockingRunner()
@@ -85,6 +103,10 @@ class Gateway:
         self.store.acquire()
         try:
             await self.db(self.store.migrate)
+            await self.db(self.reconcile_types)
+            # db 协程在执行器就绪后才能注入插件服务。
+            self.plugins.db = self.db
+            await self.plugins.start()
             if self.config.legacy:
                 from app.core.legacy import import_legacy
 
@@ -96,6 +118,7 @@ class Gateway:
             raise
 
     async def stop(self):
+        await self.plugins.stop()
         if self.maintenance_task:
             self.maintenance_task.cancel()
             await asyncio.gather(self.maintenance_task, return_exceptions=True)
@@ -105,6 +128,31 @@ class Gateway:
         self.pool.shutdown(wait=True)
         self.store.release()
 
+    def reconcile_types(self):
+        """把 asset_types 表与内存注册表对齐：内置类型登记入库，缺失插件的类型注册占位。"""
+        stamp = now()
+        with self.store.connect(write=True) as conn:
+            for kind in self.registry.values():
+                conn.execute(
+                    "INSERT INTO asset_types(type_id,display_name,icon,source,created_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?) ON CONFLICT(type_id) DO NOTHING",
+                    (
+                        kind.type_id,
+                        kind.display_name,
+                        kind.icon,
+                        "plugin" if kind.placeholder else "builtin",
+                        stamp,
+                        stamp,
+                    ),
+                )
+            rows = conn.execute("SELECT * FROM asset_types").fetchall()
+        for row in map(decode, rows):
+            if row["type_id"] in self.registry:
+                continue
+            self.registry.register(
+                PlaceholderAssetType(row["type_id"], row["display_name"], row["schemas"], row["plugin_id"])
+            )
+
     def account_snapshot(self, identity):
         with self.store.connect() as conn:
             account = fetch(conn, "accounts", identity)
@@ -112,6 +160,50 @@ class Gateway:
             if not account["enabled"] or not asset["enabled"]:
                 raise GatewayError("DISABLED", "资产或账号已禁用", 403)
             return asset, account, self.store.settings(conn)
+
+    async def upsert(self, table, body, actor, identity=None):
+        """资产/账号保存入口：插件类型的深度校验在写事务之外完成，事务内只做本地校验。"""
+        await self.precheck_entity(table, body, identity)
+        return await self.db(self.manager.save, table, body, actor, identity)
+
+    async def precheck_entity(self, table, body, identity):
+        """把需要插件 IPC 的校验从 Manager.save 事务里提出来；内置类型直接跳过。"""
+        if table not in ("assets", "accounts") or not isinstance(body, dict):
+            return
+        if table == "assets":
+            type_id = body.get("type") if not identity else await self.db(self.existing_asset_type, identity)
+            kind = self.types.get(type_id) if isinstance(type_id, str) else None
+            if isinstance(kind, PluginAssetType):
+                await kind.deep_validate_connection(body.get("connection") or {})
+            return
+        asset, old = await self.db(self.account_precheck_snapshot, identity, body.get("asset_id"))
+        if not asset:
+            return
+        kind = self.types.get(asset["type"])
+        if isinstance(kind, PluginAssetType):
+            credential = body.get("credential")
+            if credential is None and old:
+                credential = (
+                    self.vault.decrypt(old["credential_ciphertext"], old["credential_key_id"])
+                    if old.get("credential_ciphertext")
+                    else {}
+                )
+            await kind.deep_validate_config(
+                asset.get("connection") or {}, body.get("config", {}), body.get("policy", {}), credential or {}
+            )
+
+    def existing_asset_type(self, identity):
+        with self.store.connect() as conn:
+            return fetch(conn, "assets", identity)["type"]
+
+    def account_precheck_snapshot(self, identity, asset_id):
+        """读取账号预检所需的资产连接与旧凭据密文；不做任何写操作。"""
+        with self.store.connect() as conn:
+            old = fetch(conn, "accounts", identity) if identity else None
+            target = asset_id or (old or {}).get("asset_id")
+            if not target:
+                return None, None
+            return fetch(conn, "assets", target), old
 
     def context(self, asset, account, settings, legacy=False):
         limits = {key: settings.get(key, value) for key, value in DEFAULTS.items()}
@@ -149,6 +241,12 @@ class Gateway:
             if not account["enabled"] or not asset["enabled"]:
                 continue
             kind = self.types[asset["type"]]
+            artifact = getattr(kind, "artifact_hash", None)
+            if getattr(kind, "plugin_id", None) is not None:
+                # 插件工具授权绑定代码版本：制品哈希变化后未经重新确认的授权不再放行；
+                # 占位类型（artifact_hash 为空）一律不放行。
+                if artifact is None or grant["code_versions"].get(asset["type"]) != artifact:
+                    continue
             specs = kind.catalog(account)
             for spec in specs:
                 original = spec["name"]
@@ -159,13 +257,13 @@ class Gateway:
                         continue
                     if grant["tool_versions"].get(account["id"], {}).get(original) != spec["spec_hash"]:
                         continue
-                name = public_name(account["id"], original) if kind.proxied else original
+                name = public_name(account["id"], original) if kind.account_scoped_names else original
                 key = (account["id"], original)
                 if key in granted:
                     granted[key]["grants"].append(grant)
                     continue
                 item = {"spec": spec, "account": account, "asset": asset, "grant": grant, "grants": [grant]}
-                if kind.proxied and name in entries:
+                if kind.account_scoped_names and name in entries:
                     raise GatewayError("TOOL_COLLISION", "工具名称发生冲突", 503)
                 granted[key] = item
                 entries.setdefault(name, []).append(item)
@@ -177,15 +275,21 @@ class Gateway:
                 current = self.manager.client(identity=client["id"], conn=conn)
                 if not equal(current["token_hash"], client["token_hash"]):
                     raise GatewayError("UNAUTHORIZED", "客户端令牌已轮换", 401)
+                # 动态目录类型由注册表能力位决定，插件类型同样纳入后台刷新。
+                proxied = self.registry.proxied_ids()
+                if not proxied:
+                    return []
+                marks = ",".join("?" for _ in proxied)
                 return [
                     r[0]
                     for r in conn.execute(
                         "SELECT DISTINCT a.id FROM accounts a JOIN assets s ON a.asset_id=s.id "
                         "JOIN grant_accounts ga ON ga.account_id=a.id JOIN grants g ON g.id=ga.grant_id "
                         "JOIN grant_clients gc ON gc.grant_id=g.id "
-                        "WHERE gc.client_id=? AND g.enabled=1 AND a.enabled=1 AND s.enabled=1 AND s.type='mcp' AND g.tools_json!='[]' "
+                        f"WHERE gc.client_id=? AND g.enabled=1 AND a.enabled=1 AND s.enabled=1 "
+                        f"AND s.type IN ({marks}) AND g.tools_json!='[]' "
                         "AND (a.catalog_refreshed_at IS NULL OR a.catalog_refreshed_at<?)",
-                        (client["id"], now() - 300000),
+                        (client["id"], *proxied, now() - 300000),
                     )
                 ]
 
@@ -209,12 +313,13 @@ class Gateway:
             spec = copy.deepcopy(candidates[0]["spec"])
             spec.pop("spec_hash", None)
             spec["name"] = name
+            kind = self.types[candidates[0]["asset"]["type"]]
             if any(
                 c["grants"] and any(g.get("parameter_rules", {}).get(c["spec"]["name"]) for g in c["grants"])
                 for c in candidates
             ):
                 spec["description"] += " 参数受授权组黑白名单约束：黑名单优先，正则全文匹配。"
-            if candidates[0]["asset"]["type"] == "kubernetes" and len(candidates) > 1:
+            if kind.per_account_schema and len(candidates) > 1:
                 # 混合锁定/未锁定命名空间账号时目录必须暴露参数，执行仍按所选账号严格校验。
                 for candidate in candidates:
                     prop = candidate["spec"]["inputSchema"]["properties"].get("namespace")
@@ -224,7 +329,7 @@ class Gateway:
                     spec["inputSchema"]["required"] = [
                         key for key in spec["inputSchema"].get("required", []) if key != "namespace"
                     ]
-            if not self.types[candidates[0]["asset"]["type"]].proxied:
+            if not kind.account_scoped_names:
                 spec["description"] += " 可访问账号：" + "、".join(
                     f"{v['asset']['name']} · {v['account']['name']}（{v['account']['id']}）" for v in candidates
                 )
@@ -251,7 +356,7 @@ class Gateway:
                 raise GatewayError("TOOL_DENIED", "工具不存在或未授权", 403)
             chosen = candidates[0]
             arguments = copy.deepcopy(args)
-            if not self.types[chosen["asset"]["type"]].proxied:
+            if not self.types[chosen["asset"]["type"]].account_scoped_names:
                 target = arguments.pop("target", None)
                 if target is None and len(candidates) != 1:
                     raise GatewayError("TARGET_REQUIRED", "多个账号可用，必须指定 target")

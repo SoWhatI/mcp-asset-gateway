@@ -344,9 +344,7 @@ def test_kubernetes_asset_account_and_catalog(admin, seeded):
     unlocked_tools = admin.get(f"/api/accounts/{unlocked.json()['data']['id']}/tools").json()["data"]["tools"]
     schemas = {spec["name"]: spec["inputSchema"] for spec in unlocked_tools}
     # k8s_apply 的目标命名空间在 manifest 内声明，不注入 namespace 参数。
-    assert all(
-        "namespace" in schema["properties"] for name, schema in schemas.items() if name != "k8s_apply"
-    )
+    assert all("namespace" in schema["properties"] for name, schema in schemas.items() if name != "k8s_apply")
     assert "namespace" in schemas["k8s_get_resource"]["required"]
     assert "namespace" not in schemas["k8s_list_resources"]["required"]
     # 策略省略或 kinds 留空表示不限制，目录覆盖全部内置资源类型。
