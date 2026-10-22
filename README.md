@@ -16,6 +16,7 @@ A self-hosted asset gateway that provides AI clients with a single, controlled M
 | Kubernetes | Resource listing, details, Pod logs, non-interactive `k8s_exec`, and idempotent manifest `k8s_apply` (Server-Side Apply, allow-listed kinds); token or client-certificate auth — see [Kubernetes assets](docs/asset-kubernetes.md) (Chinese) |
 | Git repositories | Gateway-hosted read-only code mirrors: code search, file reading, commit history, diffs, directory tree, and branch listing |
 | Jenkins | Direct Jenkins HTTP API calls without any MCP plugin; 19 tools for jobs, builds, logs, tests, SCM, and Replay — see [Jenkins assets](docs/asset-jenkins.md) (Chinese) |
+| Plugin system | Install new asset types at runtime from a trusted, signed plugin marketplace — no code changes or image rebuilds; each plugin runs in its own venv and worker process, with Schema-driven forms and code-version-bound tool approvals |
 | Admin console | Multi-dimensional search in the authorization matrix, group management, tool select-all/clear, parameter allow/block lists (exact/regex), debugging, and audit export |
 | Security foundation | Fernet-encrypted credentials, hashed client tokens, admin sessions with CSRF protection, egress target allow-listing, consistent SQLite backups |
 
@@ -23,6 +24,8 @@ A self-hosted asset gateway that provides AI clients with a single, controlled M
 
 - An authorization group links multiple clients with multiple asset accounts; each client in the group gets the selected tools that actually exist on each account. Permissions across groups are merged (union), and identically named tools are published once. Full rules: [Authorization groups & parameter rules](docs/authorization.md) (Chinese).
 - Tools are unauthorized by default; write operations and high-risk tools (MySQL `allow_write`, Jenkins write tools, `k8s_exec`, `k8s_apply`, etc.) must be checked explicitly in an authorization group.
+- Plugin tool approvals are bound to both the tool definition hash and the plugin artifact hash: upgrading a plugin invalidates existing approvals until an admin re-confirms, even when tool names and schemas are unchanged.
+- Plugins run in separate Python worker processes with scrubbed environments (no master key); the gateway never imports plugin code. The separate process and venv are a compatibility boundary, not a malicious-code sandbox — the first release only accepts self-developed or audited plugins from a marketplace you control.
 - Client tokens are shown only once; credentials are stored encrypted; keep the master key separate from the database.
 - Optional egress registration restricts reachable targets; loopback, link-local, multicast, and cloud metadata addresses are always denied. An allow-list is not a substitute for a firewall.
 
@@ -61,6 +64,17 @@ uvicorn app.main:app_factory --factory --host 127.0.0.1 --port 8303 --workers 1 
 
 Open http://localhost:8303, sign in as admin `admin` with the one-time password, then change it. `setup` never overwrites an existing `.env` and supports `--output -` to print to stdout for generating it inside a container.
 
+## Official Plugin Marketplace
+
+Runtime-installable asset-type plugins are built and signed by this repository's CI and published to a static marketplace on GitHub Pages. To connect a deployment, set in `.env`:
+
+```
+PLUGIN_MARKET_URL=https://sowhati.github.io/mcp-asset-gateway
+PLUGIN_MARKET_PUBLIC_KEY=3L6Hk5796NEdgM9ZsrukI2834ICKPaHFuKfjHSc6c4c=
+```
+
+The marketplace index is ed25519-signed and expires after 7 days (CI re-signs every 5 days); installs are verified against the configured public key and the per-artifact SHA-256. See the [plugin system docs](docs/plugins.md) for details.
+
 ## Documentation
 
 | Document | Contents |
@@ -69,6 +83,7 @@ Open http://localhost:8303, sign in as admin `admin` with the one-time password,
 | [Authorization groups & parameter rules](docs/authorization.md) | Group model and tool parameter allow/block lists |
 | [Kubernetes assets](docs/asset-kubernetes.md) | Account policy, authentication, and `k8s_exec` tool reference |
 | [Jenkins assets](docs/asset-jenkins.md) | Native Jenkins tools, permissions, and budgets |
+| [Plugin system](docs/plugins.md) | Trusted signed marketplace, plugin packages, SDK, lifecycle & code-bound approvals (Chinese) |
 | [Deployment & operations](docs/deployment.md) | Docker build/push/upgrade, data migration, backup & restore |
 | [Security policy](SECURITY.md) | Security boundaries, verification scope, private vulnerability reporting |
 | [Contributing](CONTRIBUTING.md) | Commit conventions, verification commands, pre-release checklist |

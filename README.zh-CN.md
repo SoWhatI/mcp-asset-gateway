@@ -61,6 +61,17 @@ uvicorn app.main:app_factory --factory --host 127.0.0.1 --port 8303 --workers 1 
 
 打开 http://localhost:8303，使用管理员 `admin` 与一次性密码登录后修改密码。`setup` 不覆盖已有 `.env`，支持 `--output -` 输出到 stdout 便于在容器内生成。
 
+## 官方插件市场
+
+可运行时安装的资产类型插件由本仓库 CI 构建并签名，发布在 GitHub Pages 静态市场。自部署接入方式，在 `.env` 配置：
+
+```
+PLUGIN_MARKET_URL=https://sowhati.github.io/mcp-asset-gateway
+PLUGIN_MARKET_PUBLIC_KEY=3L6Hk5796NEdgM9ZsrukI2834ICKPaHFuKfjHSc6c4c=
+```
+
+市场索引经 ed25519 签名，有效期 7 天（CI 每 5 天重签）；安装时按配置的公钥验签并核对制品 SHA-256。详见[插件系统文档](docs/plugins.md)。
+
 ## 文档
 
 | 文档 | 内容 |

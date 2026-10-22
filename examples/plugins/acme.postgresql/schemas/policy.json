@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "allow_write": { "type": "boolean", "title": "允许写操作（sql_execute）", "default": false },
+    "query_timeout_seconds": { "type": "integer", "title": "总期限（秒）", "minimum": 1, "maximum": 30 },
+    "max_result_rows": { "type": "integer", "title": "结果行上限", "minimum": 1, "maximum": 5000 },
+    "max_output_bytes": { "type": "integer", "title": "输出字节上限", "minimum": 1024, "maximum": 1048576 },
+    "max_cell_chars": { "type": "integer", "title": "单元格字符上限", "minimum": 1, "maximum": 10000 }
+  },
+  "required": [],
+  "additionalProperties": false
+}

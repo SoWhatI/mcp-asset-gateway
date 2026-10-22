@@ -1,0 +1,58 @@
+# 官方插件市场：构建全部插件 → 官方私钥签名 → 发布到 GitHub Pages。
+#
+# 触发条件：
+# - 手动 workflow_dispatch
+# - 插件源码或构建脚本变更（push）
+# - 每 5 天定时重签（索引有效期 7 天，过期全网关市场不可用，必须维持重签）
+#
+# 首次启用前的准备（一次性）：
+# 1. 生成官方密钥对（私钥不得入库）：python scripts/build_market.py --generate-key
+# 2. 仓库 Settings → Secrets and variables → Actions：添加 PLUGIN_SIGN_KEY（私钥）
+# 3. 仓库 Settings → Pages → Build and deployment → Source：选择 GitHub Actions
+# 4. 公钥 PLUGIN_MARKET_PUBLIC_KEY 写入 README/docs 供自部署用户配置
+name: plugin-market
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "examples/plugins/**"
+      - "scripts/build_market.py"
+      - ".github/workflows/plugin-market.yml"
+  schedule:
+    - cron: "0 20 */5 * *" # 每 5 天（UTC 20:00）重签，留足 7 天有效期的余量
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: plugin-market
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安装构建依赖
+        run: pip install "cryptography==50.0.1" "httpx==0.28.1"
+      - name: 构建并签名插件市场
+        env:
+          PLUGIN_SIGN_KEY: ${{ secrets.PLUGIN_SIGN_KEY }}
+        run: |
+          python scripts/build_market.py --out dist/market \
+            --merge-from "https://sowhati.github.io/mcp-asset-gateway/" \
+            --changes "CI 发布 $(git rev-parse --short HEAD)"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/market
+      - id: deployment
+        uses: actions/deploy-pages@v4
