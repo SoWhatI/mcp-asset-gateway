@@ -96,6 +96,48 @@ async function install(plugin, version) {
   });
 }
 
+const offlineInput = ref(null);
+
+// 离线安装：先预检（服务端比对官方市场索引并返回验证结论），验证不通过时
+// 由用户在二次确认中明确承担风险（confirm=true）才真正创建安装任务。
+async function installOffline(event) {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (!file) return;
+  if (file.size > 200 * 1024 * 1024) {
+    ElMessage.error("制品超过大小上限（200MB）");
+    return;
+  }
+  await run(async () => {
+    const previewForm = new FormData();
+    previewForm.append("file", file);
+    const preview = await api("/plugins/install-offline", { method: "POST", body: previewForm });
+    if (!preview?.require_confirm) return;
+    const identity = `插件 ${preview.plugin_id} ${preview.version}（${preview.filename}）`;
+    const hashText = `制品 sha256：${String(preview.sha256).slice(0, 32)}…`;
+    if (preview.verified) {
+      await ElMessageBox.confirm(
+        `${identity}。制品已通过官方市场验证。${hashText}。安装后需手动启用。`,
+        "确认离线安装",
+        { type: "warning", confirmButtonText: "确认安装" },
+      ).catch(() => Promise.reject(new Error("cancelled")));
+    } else {
+      await ElMessageBox.confirm(
+        `${identity}。${preview.verify_note || "制品未通过官方市场验证"}。${hashText}。` +
+          "插件代码将在网关宿主机以独立进程运行并可能访问网络与凭据，请确认制品来源可信。",
+        "安全警告：制品未通过验证",
+        { type: "error", confirmButtonText: "仍然安装（我已确认来源可信）", cancelButtonText: "取消" },
+      ).catch(() => Promise.reject(new Error("cancelled")));
+    }
+    const confirmForm = new FormData();
+    confirmForm.append("file", file);
+    confirmForm.append("confirm", "true");
+    await api("/plugins/install-offline", { method: "POST", body: confirmForm });
+    ElMessage.success("安装任务已创建，请在安装任务页查看进度");
+    await refreshJobs();
+  });
+}
+
 async function upgrade(pluginId, version, sha256) {
   await ElMessageBox.confirm(
     `升级到 ${version}？已有账号配置会先校验兼容性；插件代码变化后相关工具授权需要重新确认。`,
@@ -209,6 +251,14 @@ onUnmounted(() => clearTimeout(pollTimer));
           >
           </el-input>
           <el-button @click="refreshMarket">刷新市场</el-button>
+          <el-button type="primary" plain :disabled="busy" @click="offlineInput?.click()">离线安装</el-button>
+          <input
+            ref="offlineInput"
+            type="file"
+            accept=".zip,application/zip"
+            style="display: none"
+            @change="installOffline"
+          />
         </div>
         <el-alert
           v-if="marketError"

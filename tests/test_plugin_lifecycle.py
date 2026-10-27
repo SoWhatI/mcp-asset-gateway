@@ -521,3 +521,64 @@ def test_missing_files_after_restart_show_placeholder(stack):
         # 资产记录保留，内置类型照常。
         assert len(rebooted.get("/api/assets").json()["data"]["items"]) == 1
         assert types["mysql"]["available"] is True
+
+
+# ---------- 离线安装 ----------
+
+
+def offline_upload(admin, filename, payload, confirm=None):
+    data = {"confirm": "true"} if confirm else None
+    return admin.post(
+        "/api/plugins/install-offline",
+        files={"file": (filename, payload, "application/zip")},
+        data=data,
+    )
+
+
+def test_offline_install_unverified_requires_explicit_confirm(plugin_app):
+    """官方市场不存在的制品：预检必须标记未验证，未 confirm 不创建任务。"""
+    manifest = plugin_manifest("3.0.0")
+    payload = artifact_zip(manifest, PLUGIN_CODE.format(version="3.0.0", type_id="acme.fake"))
+    response = offline_upload(plugin_app, "acme.fake-3.0.0.zip", payload)
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["require_confirm"] is True
+    assert data["verified"] is False
+    assert data["verify_note"]
+    assert data["plugin_id"] == "acme.fake" and data["version"] == "3.0.0"
+    assert data["sha256"]
+    # 未 confirm 时不得产生任何安装任务。
+    jobs = plugin_app.get("/api/plugins/jobs").json()["data"]["items"]
+    assert not [job for job in jobs if job["plugin_id"] == "acme.fake" and job["version"] == "3.0.0"]
+
+
+def test_offline_install_market_verified_then_confirmed(plugin_app, stack):
+    """官方市场已发布的制品：预检 verified=true，confirm 后安装成功。"""
+    stack["market"].publish(plugin_manifest("4.0.0"), code=PLUGIN_CODE.format(version="4.0.0", type_id="acme.fake"))
+    payload = (stack["market"].root / "artifacts" / "acme.fake-4.0.0.zip").read_bytes()
+    preview = offline_upload(plugin_app, "acme.fake-4.0.0.zip", payload).json()["data"]
+    assert preview["require_confirm"] is True and preview["verified"] is True
+    job = offline_upload(plugin_app, "acme.fake-4.0.0.zip", payload, confirm=True).json()["data"]
+    result = wait_job(plugin_app, job["id"])
+    assert result["status"] == "done", result
+    installed = plugin_app.get("/api/plugins").json()["data"]["items"]
+    assert any(item["id"] == "acme.fake" for item in installed)
+
+
+def test_offline_install_rejects_same_version_conflict(plugin_app, stack):
+    """同版本号不同内容：即使显式 confirm 也拒绝覆盖。"""
+    stack["market"].publish(plugin_manifest("5.0.0"), code=PLUGIN_CODE.format(version="5.0.0", type_id="acme.fake"))
+    payload = artifact_zip(plugin_manifest("5.0.0"), PLUGIN_CODE.format(version="5.0.0", type_id="acme.fake"))
+    job = offline_upload(plugin_app, "acme.fake-5.0.0.zip", payload, confirm=True).json()["data"]
+    assert wait_job(plugin_app, job["id"])["status"] == "done"
+    tampered = artifact_zip(
+        plugin_manifest("5.0.0"), PLUGIN_CODE.format(version="5.0.0", type_id="acme.fake") + "\n# tampered"
+    )
+    response = offline_upload(plugin_app, "acme.fake-5.0.0.zip", tampered, confirm=True)
+    assert response.json()["error"]["code"] == "VERSION_CONFLICT"
+
+
+def test_offline_install_rejects_invalid_zip(plugin_app):
+    response = offline_upload(plugin_app, "broken.zip", b"PK\x03\x04-not-a-real-zip")
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "OFFLINE_ARTIFACT"

@@ -6,15 +6,17 @@ export async function api(path, options = {}) {
       ?.split("=")
       .slice(1)
       .join("=") || "";
+  // FormData 上传（multipart）不设置 Content-Type，交给浏览器生成 boundary。
+  const isForm = options.body instanceof FormData;
   const response = await fetch(`/api${path}`, {
     credentials: "same-origin",
     ...options,
     headers: {
-      "Content-Type": "application/json",
+      ...(isForm ? {} : { "Content-Type": "application/json" }),
       "X-CSRF-Token": decodeURIComponent(csrf),
       ...options.headers,
     },
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    body: options.body === undefined || isForm ? options.body : JSON.stringify(options.body),
   });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));

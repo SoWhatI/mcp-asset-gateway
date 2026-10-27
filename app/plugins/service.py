@@ -20,7 +20,7 @@ from app.core.manager import audit
 from app.core.manager import fetch as manager_fetch
 from app.core.security import GatewayError
 from app.plugins.bridge import PluginAssetType
-from app.plugins.installer import Installer
+from app.plugins.installer import MAX_ARTIFACT_BYTES, Installer, parse_offline_artifact
 from app.plugins.process import PluginProcessPool
 
 logger = logging.getLogger("gateway.plugins")
@@ -193,6 +193,86 @@ class PluginService:
         self.jobs[job["id"]] = asyncio.create_task(self._run_install_job(job, entry))
         return job
 
+    async def install_offline(self, data, filename, actor, confirm=False):
+        """离线安装管理员上传的制品 zip。
+
+        预检解析 manifest 并计算 sha256，与市场索引比对：哈希命中即官方
+        验证通过；未命中（第三方制品、市场未配置或不可达）时必须由管理员
+        显式 confirm 才继续——来源风险由用户自行确认承担。
+        """
+        if not isinstance(data, bytes) or not data:
+            raise GatewayError("VALIDATION", "上传内容为空", 422)
+        if len(data) > MAX_ARTIFACT_BYTES:
+            raise GatewayError("VALIDATION", "制品超过大小上限（200MB）", 413)
+
+        manifest, artifact_hash = await asyncio.to_thread(parse_offline_artifact, data)
+
+        verified, verify_note = False, None
+        if not self.market.configured:
+            verify_note = "网关未配置插件市场，无法与官方索引比对"
+        else:
+            try:
+                index = self.market.index(refresh=True)
+            except GatewayError as error:
+                verify_note = f"市场不可用（{error.message}），无法与官方索引比对"
+            else:
+                for plugin in index.get("plugins", []):
+                    if plugin.get("id") != manifest["id"]:
+                        continue
+                    for entry in plugin.get("versions", []):
+                        if entry.get("version") == manifest["version"]:
+                            verified = entry.get("sha256") == artifact_hash
+                            if not verified:
+                                verify_note = (
+                                    "官方市场存在该版本号，但制品哈希不一致——"
+                                    "可能是被篡改的官方包或本地重打包，请勿安装来历不明的制品"
+                                )
+                            break
+                    break
+                if not verified and verify_note is None:
+                    verify_note = "官方市场索引中不存在该插件版本"
+
+        if not confirm:
+            return {
+                "require_confirm": True,
+                "verified": verified,
+                "verify_note": verify_note,
+                "plugin_id": manifest["id"],
+                "version": manifest["version"],
+                "sha256": artifact_hash,
+                "size": len(data),
+                "filename": filename,
+            }
+
+        installed = await asyncio.to_thread(self.installer._installed_hash, manifest["id"], manifest["version"])
+        if installed == artifact_hash:
+            raise GatewayError("ALREADY_INSTALLED", "该版本已安装（制品哈希一致），无需重复安装", 409)
+        if installed is not None:
+            raise GatewayError("VERSION_CONFLICT", "同版本号已安装内容与上传制品不一致，禁止覆盖", 409)
+
+        entry = {
+            "artifact": filename or "offline-upload.zip",
+            "sha256": artifact_hash,
+            "size": len(data),
+            "source_bytes": data,
+        }
+        job = {
+            "id": str(uuid.uuid4()),
+            "plugin_id": manifest["id"],
+            "version": manifest["version"],
+            "action": "install",
+            "status": "pending",
+            "progress": 0,
+            "detail_json": dumps(
+                {"sha256": artifact_hash, "size": len(data), "verified": verified, "source": "offline"}
+            ),
+            "error_json": None,
+            "actor_id": actor["id"] if actor else None,
+        }
+        await self.db(self._insert_job, job)
+        self.jobs[job["id"]] = asyncio.create_task(self._run_install_job(job, entry))
+        return job
+
     def _market_version(self, plugin_id, version):
         if not self.market.configured:
             raise GatewayError("MARKET_UNCONFIGURED", "未配置插件市场来源或公钥", 503)
@@ -215,7 +295,13 @@ class PluginService:
         try:
             await self.db(self._mark_job, job["id"], "running", 1)
             manifest = await self.installer.run(
-                job, progress, job["plugin_id"], job["version"], entry, expect_hash=entry.get("sha256")
+                job,
+                progress,
+                job["plugin_id"],
+                job["version"],
+                entry,
+                expect_hash=entry.get("sha256"),
+                source_bytes=entry.get("source_bytes"),
             )
             await self.db(
                 self._record_installed,

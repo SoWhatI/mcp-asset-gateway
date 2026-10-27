@@ -366,6 +366,25 @@ def create_app(config=None):
         )
         return ok(request, job)
 
+    @app.post("/api/plugins/install-offline")
+    async def plugin_install_offline(request: Request):
+        """离线安装：管理员直接上传制品 zip。
+
+        首次提交（不带 confirm）返回预检结果：制品能否通过官方市场索引
+        验证、manifest 身份与 sha256；未通过验证时由用户决定是否继续。
+        带 confirm=true 的提交才真正启动安装任务。
+        """
+        actor = await admin(request)
+        gateway.rate.check("plugins:" + actor["id"], 20)
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None or isinstance(upload, str) or not getattr(upload, "filename", None):
+            raise GatewayError("VALIDATION", "缺少上传文件（multipart 字段 file）", 422)
+        data = await upload.read()
+        confirm = str(form.get("confirm", "")).lower() in ("1", "true", "yes")
+        result = await gateway.plugins.install_offline(data, upload.filename, actor, confirm=confirm)
+        return ok(request, result)
+
     @app.get("/api/plugins/jobs")
     async def plugin_jobs(request: Request, limit: int = 50):
         await admin(request)

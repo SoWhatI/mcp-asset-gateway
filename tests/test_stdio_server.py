@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from cryptography.fernet import Fernet
@@ -41,6 +42,10 @@ def talk(env, messages, timeout=60):
 def clean_env(**extra):
     env = {k: v for k, v in os.environ.items() if k not in STRAY}
     env["PYTHONPATH"] = str(ROOT)
+    # stdio 子进程会 load_dotenv() 读到开发机本地 .env（其库可能被运行中的
+    # 网关锁定而测试直接失败）；显式给定一次性库路径隔离宿主环境，dotenv
+    # 默认不覆盖已存在的环境变量，CI 无 .env 时行为不变。
+    env.setdefault("DATABASE_PATH", str(Path(tempfile.gettempdir()) / f"mag-stdio-test-{os.getpid()}.db"))
     env.update(extra)
     return env
 

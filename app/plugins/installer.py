@@ -6,6 +6,7 @@
 
 import asyncio
 import hashlib
+import io
 import json
 import shutil
 import stat
@@ -30,6 +31,35 @@ def sha256_file(path):
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def parse_offline_artifact(data):
+    """预检离线制品：整体哈希 + 提取根级 manifest.json。
+
+    只做轻校验（zip 结构、清单可解析、含 id/version）；解包安全、
+    manifest 深度校验与握手预检仍由安装器的正式流程把关。
+    """
+    digest = hashlib.sha256(data).hexdigest()
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as bundle:
+            info = next(
+                (item for item in bundle.infolist() if item.filename == "manifest.json" and not item.is_dir()), None
+            )
+            if info is None:
+                raise GatewayError("OFFLINE_ARTIFACT", "制品内缺少根级 manifest.json（请上传插件市场原始 zip）", 422)
+            if info.file_size > 8 * 1024 * 1024:
+                raise GatewayError("OFFLINE_ARTIFACT", "manifest.json 超过大小上限", 422)
+            try:
+                manifest = json.loads(bundle.read(info).decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise GatewayError("OFFLINE_ARTIFACT", f"manifest.json 解析失败：{error}", 422) from error
+    except zipfile.BadZipFile as error:
+        raise GatewayError("OFFLINE_ARTIFACT", "不是有效的 zip 制品", 422) from error
+    if not isinstance(manifest, dict):
+        raise GatewayError("OFFLINE_ARTIFACT", "manifest.json 必须是 JSON 对象", 422)
+    if not isinstance(manifest.get("id"), str) or not isinstance(manifest.get("version"), str):
+        raise GatewayError("OFFLINE_ARTIFACT", "manifest 缺少 id/version 字段", 422)
+    return manifest, digest
 
 
 def safe_unpack(archive, target):
@@ -74,8 +104,12 @@ class Installer:
         self.store = store
         self.python_exe = python_exe
 
-    async def run(self, job, progress, plugin_id, version, market_version, expect_hash=None):
-        """安装指定版本。progress(percent, detail) 负责更新任务表。"""
+    async def run(self, job, progress, plugin_id, version, market_version, expect_hash=None, source_bytes=None):
+        """安装指定版本。progress(percent, detail) 负责更新任务表。
+
+        source_bytes 提供时为离线安装：制品直接来自管理员上传，跳过市场下载；
+        哈希校验、安全解包、独立环境与握手预检等后续流程完全一致。
+        """
         expected = expect_hash or market_version.get("sha256")
         if not isinstance(expected, str) or len(expected) != 64:
             raise GatewayError("MARKET_PROTOCOL", "市场条目缺少有效的制品哈希", 502)
@@ -93,27 +127,50 @@ class Installer:
         staging.mkdir(parents=True)
         try:
             return await self._install(
-                staging, plugin_root, version_dir, progress, plugin_id, version, market_version, expected
+                staging,
+                plugin_root,
+                version_dir,
+                progress,
+                plugin_id,
+                version,
+                market_version,
+                expected,
+                source_bytes=source_bytes,
             )
         finally:
             shutil.rmtree(staging, ignore_errors=True)
 
-    async def _install(self, staging, plugin_root, version_dir, progress, plugin_id, version, market_version, expected):
+    async def _install(
+        self,
+        staging,
+        plugin_root,
+        version_dir,
+        progress,
+        plugin_id,
+        version,
+        market_version,
+        expected,
+        source_bytes=None,
+    ):
         archive = staging / "artifact.zip"
-        progress(10, "下载制品")
-        handle = None
+        if source_bytes is not None:
+            progress(10, "接收离线制品")
+            await asyncio.to_thread(archive.write_bytes, source_bytes)
+        else:
+            progress(10, "下载制品")
+            handle = None
 
-        def sink(chunk):
-            nonlocal handle
-            if handle is None:
-                handle = open(archive, "wb")
-            handle.write(chunk)
+            def sink(chunk):
+                nonlocal handle
+                if handle is None:
+                    handle = open(archive, "wb")
+                handle.write(chunk)
 
-        try:
-            await asyncio.to_thread(self.market.download, market_version.get("artifact"), sink, MAX_ARTIFACT_BYTES)
-        finally:
-            if handle is not None:
-                handle.close()
+            try:
+                await asyncio.to_thread(self.market.download, market_version.get("artifact"), sink, MAX_ARTIFACT_BYTES)
+            finally:
+                if handle is not None:
+                    handle.close()
         progress(30, "校验制品哈希")
         actual = await asyncio.to_thread(sha256_file, archive)
         if actual != expected:
