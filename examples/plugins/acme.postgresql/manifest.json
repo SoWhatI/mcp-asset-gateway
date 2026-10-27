@@ -1,6 +1,6 @@
 {
   "id": "acme.postgresql",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "acme",
   "name": "PostgreSQL",
   "description": "PostgreSQL 数据库资产：只读查询、表结构浏览与受控写入。工具语义对齐内置 MySQL 适配器。",
@@ -9,7 +9,11 @@
   "python_compat": ">=3.11",
   "entry": "acme_postgresql:PostgreSQLPlugin",
   "workers": 2,
-  "capabilities": { "network": true, "credential": true, "write": true },
+  "capabilities": {
+    "network": true,
+    "credential": true,
+    "write": true
+  },
   "types": [
     {
       "type_id": "acme.postgresql",
@@ -31,12 +35,20 @@
           "inputSchema": {
             "type": "object",
             "properties": {
-              "schema": { "type": "string", "title": "schema 名", "maxLength": 128, "default": "public" }
+              "schema": {
+                "type": "string",
+                "title": "schema 名",
+                "maxLength": 128,
+                "default": "public"
+              }
             },
             "required": [],
             "additionalProperties": false
           },
-          "annotations": { "readOnlyHint": true, "destructiveHint": false }
+          "annotations": {
+            "readOnlyHint": true,
+            "destructiveHint": false
+          }
         },
         {
           "name": "describe_table",
@@ -44,13 +56,28 @@
           "inputSchema": {
             "type": "object",
             "properties": {
-              "table": { "type": "string", "title": "表名", "minLength": 1, "maxLength": 256 },
-              "schema": { "type": "string", "title": "schema 名", "maxLength": 128, "default": "public" }
+              "table": {
+                "type": "string",
+                "title": "表名",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "schema": {
+                "type": "string",
+                "title": "schema 名",
+                "maxLength": 128,
+                "default": "public"
+              }
             },
-            "required": ["table"],
+            "required": [
+              "table"
+            ],
             "additionalProperties": false
           },
-          "annotations": { "readOnlyHint": true, "destructiveHint": false }
+          "annotations": {
+            "readOnlyHint": true,
+            "destructiveHint": false
+          }
         },
         {
           "name": "sql_query",
@@ -58,12 +85,22 @@
           "inputSchema": {
             "type": "object",
             "properties": {
-              "sql": { "type": "string", "title": "SQL 语句", "minLength": 1, "maxLength": 8192 }
+              "sql": {
+                "type": "string",
+                "title": "SQL 语句",
+                "minLength": 1,
+                "maxLength": 8192
+              }
             },
-            "required": ["sql"],
+            "required": [
+              "sql"
+            ],
             "additionalProperties": false
           },
-          "annotations": { "readOnlyHint": true, "destructiveHint": false }
+          "annotations": {
+            "readOnlyHint": true,
+            "destructiveHint": false
+          }
         },
         {
           "name": "sql_execute",
@@ -71,12 +108,22 @@
           "inputSchema": {
             "type": "object",
             "properties": {
-              "sql": { "type": "string", "title": "SQL 语句", "minLength": 1, "maxLength": 8192 }
+              "sql": {
+                "type": "string",
+                "title": "SQL 语句",
+                "minLength": 1,
+                "maxLength": 8192
+              }
             },
-            "required": ["sql"],
+            "required": [
+              "sql"
+            ],
             "additionalProperties": false
           },
-          "annotations": { "readOnlyHint": false, "destructiveHint": true }
+          "annotations": {
+            "readOnlyHint": false,
+            "destructiveHint": true
+          }
         }
       ]
     }
