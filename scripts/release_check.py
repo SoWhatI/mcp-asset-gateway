@@ -163,6 +163,9 @@ def main():
                 continue
             content = file.read_bytes()
         if len(content) > 2 * 1024 * 1024 or b"\0" in content:
+            if fnmatch.fnmatch(path, "examples/plugins/*/wheelhouse/*.whl"):
+                # 插件锁定依赖 wheel：有意入库的二进制制品，保证官方市场构建可复现。
+                continue
             findings.append(f"{path}: 请人工核对二进制或大文件")
             continue
         try:

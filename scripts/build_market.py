@@ -22,6 +22,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -100,6 +101,14 @@ def build_plugin(source, workdir):
     """打包单个插件：返回 (manifest, 制品字节, sha256)。第三方依赖经 deps.txt 声明。"""
     manifest = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
     wheelhouse = workdir / "wheelhouse"
+    # 入库的锁定 wheelhouse（examples/plugins/<id>/wheelhouse）优先：构建临时
+    # 目录在 CI 上每次都是全新的，必须从插件源码目录拷入，否则会重新解析传递
+    # 依赖导致制品哈希漂移、触发防覆盖拒绝。
+    locked = source / "wheelhouse"
+    if locked.is_dir() and any(locked.glob("*.whl")):
+        wheelhouse.mkdir(parents=True, exist_ok=True)
+        for wheel in locked.glob("*.whl"):
+            shutil.copy2(wheel, wheelhouse / wheel.name)
     lock = ""
     deps_file = source / "deps.txt"
     if deps_file.exists():
