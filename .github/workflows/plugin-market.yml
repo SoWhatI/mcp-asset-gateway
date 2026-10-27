@@ -15,6 +15,8 @@ name: plugin-market
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     paths:
       - "examples/plugins/**"
       - "scripts/build_market.py"
@@ -44,13 +46,20 @@ jobs:
           python-version: "3.12"
       - name: 安装构建依赖
         run: pip install "cryptography==50.0.1" "httpx==0.28.1"
-      - name: 构建并签名插件市场
+      - name: 构建并签名插件市场（定时事件走纯重签）
         env:
           PLUGIN_SIGN_KEY: ${{ secrets.PLUGIN_SIGN_KEY }}
         run: |
-          python scripts/build_market.py --out dist/market \
-            --merge-from "https://sowhati.github.io/mcp-asset-gateway/" \
-            --changes "CI 发布 $(git rev-parse --short HEAD)"
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            # 重签 ≠ 重新构建：CI 重新打包会因传递依赖漂移（如 pip 新增 wheel）
+            # 触发防覆盖保护失败；纯重签只延长索引有效期，制品与条目原样保留。
+            python scripts/build_market.py --resign-only --out dist/market \
+              --merge-from "https://sowhati.github.io/mcp-asset-gateway/"
+          else
+            python scripts/build_market.py --out dist/market \
+              --merge-from "https://sowhati.github.io/mcp-asset-gateway/" \
+              --changes "CI 发布 $(git rev-parse --short HEAD)"
+          fi
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist/market

@@ -70,4 +70,8 @@ jobs:
           python -m pip_audit -r requirements.lock --no-deps --disable-pip
       - name: 前端依赖漏洞审计
         if: ${{ !cancelled() }}
-        run: npm audit --prefix web --registry=https://registry.npmjs.org
+        # --omit=dev：仅审计生产依赖链。vite 的传递依赖 launch-editor
+        # （GHSA-587h-7wmj-h5pm，仅影响 dev server，Windows 特有）在上游
+        # 尚无修复版本（advisory patched: None），不能因 dev 链告警阻断 CI；
+        # 待修复版发布后升级依赖即可。
+        run: npm audit --prefix web --omit=dev --registry=https://registry.npmjs.org

@@ -79,7 +79,9 @@ def load_key(arguments):
     print(
         "PLUGIN_SIGN_KEY="
         + base64.b64encode(
-            private.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw, serialization.NoEncryption())
+            private.private_bytes(
+                serialization.Encoding.Raw, serialization.PrivateFormat.Raw, serialization.NoEncryption()
+            )
         ).decode()
     )
     return private
@@ -101,14 +103,32 @@ def build_plugin(source, workdir):
     lock = ""
     deps_file = source / "deps.txt"
     if deps_file.exists():
-        requirements = [line.strip() for line in deps_file.read_text().splitlines() if line.strip() and not line.startswith("#")]
+        requirements = [
+            line.strip() for line in deps_file.read_text().splitlines() if line.strip() and not line.startswith("#")
+        ]
         if requirements:
             wheelhouse.mkdir(parents=True, exist_ok=True)
-            for requirement in requirements:
-                subprocess.run(
-                    [sys.executable, "-m", "pip", "download", requirement, "--only-binary=:all:", "-d", str(wheelhouse)],
-                    check=True,
+            if any(wheelhouse.glob("*.whl")):
+                # 插件源码已提交锁定 wheelhouse（与已发布制品一致）：跳过下载，
+                # 避免 CI 重新解析传递依赖（如 pip 新增 tzdata）导致制品哈希漂移。
+                print(
+                    f"{manifest['id']}：使用锁定 wheelhouse（{len(list(wheelhouse.glob('*.whl')))} 个 wheel，跳过下载）"
                 )
+            else:
+                for requirement in requirements:
+                    subprocess.run(
+                        [
+                            sys.executable,
+                            "-m",
+                            "pip",
+                            "download",
+                            requirement,
+                            "--only-binary=:all:",
+                            "-d",
+                            str(wheelhouse),
+                        ],
+                        check=True,
+                    )
             lock = lockfile(wheelhouse)
     module = manifest["entry"].partition(":")[0]
     # 确定性打包：zip 内条目的时间戳与权限位必须固定，否则 CI 每次 checkout
@@ -187,7 +207,9 @@ def carry_history(previous, merge_from, artifacts_dir, fresh_entries):
         plugin_id = plugin.get("id", "")
         keep = []
         for entry in plugin.get("versions", []):
-            fresh_entry = next((v for v in fresh_entries.get(plugin_id, []) if v["version"] == entry.get("version")), None)
+            fresh_entry = next(
+                (v for v in fresh_entries.get(plugin_id, []) if v["version"] == entry.get("version")), None
+            )
             if fresh_entry is not None:
                 if fresh_entry["sha256"] != entry.get("sha256"):
                     raise SystemExit(f"版本冲突：{plugin_id}@{entry['version']} 已以不同内容发布，禁止覆盖")
@@ -207,10 +229,55 @@ def carry_history(previous, merge_from, artifacts_dir, fresh_entries):
     return history
 
 
+def resign_only(arguments, out, artifacts_dir, private):
+    """纯重签：不重建制品，只搬运现有发布并延长索引有效期。
+
+    cron 定时重签必须走此模式——重签 ≠ 重新构建。若在 CI 中重新打包，
+    传递依赖（如 pip 新解析出的 wheel）会让制品哈希漂移，触发防覆盖保护；
+    而放宽防覆盖又会允许同版本内容漂移，破坏供应链模型。
+    """
+    if not arguments.merge_from:
+        raise SystemExit("--resign-only 必须配合 --merge-from（对哪次发布重签）")
+    previous = fetch_previous(arguments.merge_from)
+    if previous is None:
+        raise SystemExit(f"重签来源不可用：{arguments.merge_from}")
+    plugins = []
+    for plugin in previous.get("plugins", []):
+        versions = []
+        for entry in plugin.get("versions", []):
+            relative = entry.get("artifact", "")
+            data = read_artifact(arguments.merge_from, relative)
+            if data is None:
+                print(f"警告：制品不可达，该版本将失去可安装性，跳过 {plugin.get('id')}@{entry.get('version')}")
+                continue
+            digest = hashlib.sha256(data).hexdigest()
+            if digest != entry.get("sha256"):
+                raise SystemExit(
+                    f"制品哈希与索引不符：{relative}（索引 {str(entry.get('sha256'))[:16]}… != 实际 {digest[:16]}…）"
+                )
+            (artifacts_dir / Path(relative).name).write_bytes(data)
+            versions.append(entry)
+        if versions:
+            plugins.append({**plugin, "versions": versions})
+    index = {
+        "version": previous.get("version", 1),
+        "generated_at": int(time.time() * 1000),
+        "expires_at": int(time.time() * 1000) + INDEX_TTL_MS,
+        "plugins": plugins,
+    }
+    payload_index = json.dumps(index, ensure_ascii=False).encode()
+    (out / "index.json").write_bytes(payload_index)
+    (out / "index.sig").write_text(base64.b64encode(private.sign(payload_index)).decode(), encoding="utf-8")
+    (out / "index.html").write_text(PORTAL_HTML, encoding="utf-8")
+    print(f"已完成纯重签：{len(plugins)} 个插件，{sum(len(p['versions']) for p in plugins)} 个版本，索引有效期 7 天")
+
+
 def generate_key_pair():
     """生成官方密钥对并打印：私钥进 CI Secret，公钥进 README 与部署配置。"""
     private = Ed25519PrivateKey.generate()
-    raw = private.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw, serialization.NoEncryption())
+    raw = private.private_bytes(
+        serialization.Encoding.Raw, serialization.PrivateFormat.Raw, serialization.NoEncryption()
+    )
     public = private.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
     print("PLUGIN_SIGN_KEY=" + base64.b64encode(raw).decode())
     print("PLUGIN_MARKET_PUBLIC_KEY=" + base64.b64encode(public).decode())
@@ -223,6 +290,9 @@ def main():
     parser.add_argument("--out", default="dist/market", help="市场输出目录")
     parser.add_argument("--key", default=None, help="base64 ed25519 私钥（缺省读 PLUGIN_SIGN_KEY 环境变量）")
     parser.add_argument("--merge-from", default=None, help="上一次发布位置（https URL 或本地目录），用于保留历史版本")
+    parser.add_argument(
+        "--resign-only", action="store_true", help="纯重签：不重建制品，仅延长现有索引有效期（cron 用）"
+    )
     parser.add_argument("--changes", default="", help="本次发布变更说明")
     arguments = parser.parse_args()
     if arguments.generate_key:
@@ -233,6 +303,10 @@ def main():
     artifacts_dir = out / "artifacts"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     private = load_key(arguments)
+
+    if arguments.resign_only:
+        resign_only(arguments, out, artifacts_dir, private)
+        return
 
     sources = sorted(path for path in PLUGINS_SOURCE.iterdir() if (path / "manifest.json").exists())
     if not sources:
@@ -277,7 +351,9 @@ def main():
     if arguments.merge_from:
         previous = fetch_previous(arguments.merge_from)
         if previous:
-            history = carry_history(previous, arguments.merge_from, artifacts_dir, {pid: [v["entry"]] for pid, v in fresh.items()})
+            history = carry_history(
+                previous, arguments.merge_from, artifacts_dir, {pid: [v["entry"]] for pid, v in fresh.items()}
+            )
 
     plugins = []
     for plugin_id, value in fresh.items():
@@ -295,8 +371,12 @@ def main():
     (out / "index.sig").write_text(base64.b64encode(private.sign(payload_index)).decode(), encoding="utf-8")
     (out / "index.html").write_text(PORTAL_HTML, encoding="utf-8")
 
-    public_b64 = base64.b64encode(private.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)).decode()
-    print(f"市场目录已生成：{out.resolve()}（{len(plugins)} 个插件，{sum(len(p['versions']) for p in plugins)} 个版本）")
+    public_b64 = base64.b64encode(
+        private.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    ).decode()
+    print(
+        f"市场目录已生成：{out.resolve()}（{len(plugins)} 个插件，{sum(len(p['versions']) for p in plugins)} 个版本）"
+    )
     print("PLUGIN_MARKET_PUBLIC_KEY=" + public_b64)
 
 
